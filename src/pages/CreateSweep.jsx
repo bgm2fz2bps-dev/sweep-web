@@ -195,21 +195,8 @@ export default function CreateSweep() {
       {error && <div className="alert alert-error">{error}</div>}
 
       <form onSubmit={handleSubmit} className="card">
+        {/* TAB race link toggle — race picker comes first */}
         <div className="form-group">
-          <label className="form-label">Sweep Name</label>
-          <input
-            className="input"
-            type="text"
-            placeholder="e.g. Work Cup Sweep 2025"
-            value={form.name}
-            onChange={update('name')}
-            maxLength={60}
-            autoFocus
-          />
-        </div>
-
-        {/* TAB race link toggle */}
-        <div className="form-group" style={{ borderTop: '1px solid var(--border)', paddingTop: '20px', marginTop: '4px' }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', userSelect: 'none' }}>
             <input
               type="checkbox"
@@ -287,6 +274,19 @@ export default function CreateSweep() {
             )}
           </div>
         )}
+
+        <div className="form-group" style={{ borderTop: '1px solid var(--border)', paddingTop: '20px' }}>
+          <label className="form-label">Sweep Name</label>
+          <input
+            className="input"
+            type="text"
+            placeholder="e.g. Work Cup Sweep 2025"
+            value={form.name}
+            onChange={update('name')}
+            maxLength={60}
+            autoFocus
+          />
+        </div>
 
         <div className="form-group">
           <label className="form-label">Race</label>
