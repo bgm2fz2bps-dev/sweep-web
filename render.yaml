@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: sweep-proxy
+    runtime: node
+    plan: free
+    buildCommand: echo "no build step required"
+    startCommand: node proxy-server.js
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+    healthCheckPath: /health
