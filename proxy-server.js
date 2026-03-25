@@ -4,27 +4,12 @@ import https from 'https';
 const PORT = process.env.PORT || 5175;
 const TAB_BASE = 'api.beta.tab.com.au';
 
-const server = http.createServer((req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
+function makeTabRequest(path, res, redirectCount = 0) {
+  if (redirectCount > 5) {
+    res.writeHead(502);
+    res.end(JSON.stringify({ error: 'Too many redirects from TAB API' }));
     return;
   }
-
-  // Health check for Render/Railway uptime monitoring
-  if (req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok' }));
-    return;
-  }
-
-  // Strip the /tab prefix
-  const path = req.url.replace(/^\/tab/, '');
-
   const options = {
     hostname: TAB_BASE,
     port: 443,
@@ -36,35 +21,52 @@ const server = http.createServer((req, res) => {
       'Origin': 'https://www.tab.com.au',
       'Referer': 'https://www.tab.com.au/',
       'Accept': 'application/json, text/plain, */*',
-      'Accept-Encoding': 'identity',  // no compression — keeps piping simple
+      'Accept-Encoding': 'identity',
       'Accept-Language': 'en-AU,en;q=0.9',
       'Host': TAB_BASE,
     },
   };
-
   const proxyReq = https.request(options, (proxyRes) => {
-    // Pass through all TAB API response headers, plus CORS
+    const { statusCode, headers } = proxyRes;
+    if ((statusCode === 301 || statusCode === 302 || statusCode === 307 || statusCode === 308) && headers.location) {
+      proxyRes.resume();
+      let location = headers.location;
+      try {
+        const u = new URL(location);
+        location = u.pathname + u.search;
+      } catch {}
+      makeTabRequest(location, res, redirectCount + 1);
+      return;
+    }
     const responseHeaders = {
       ...proxyRes.headers,
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Headers': '*',
     };
-    res.writeHead(proxyRes.statusCode, responseHeaders);
+    res.writeHead(statusCode, responseHeaders);
     proxyRes.pipe(res);
   });
-
   proxyReq.on('timeout', () => {
     proxyReq.destroy();
-    res.writeHead(504);
-    res.end(JSON.stringify({ error: 'TAB API request timed out' }));
+    if (!res.headersSent) { res.writeHead(504); res.end(JSON.stringify({ error: 'TAB API request timed out' })); }
   });
-
   proxyReq.on('error', (err) => {
-    res.writeHead(502);
-    res.end(JSON.stringify({ error: err.message }));
+    if (!res.headersSent) { res.writeHead(502); res.end(JSON.stringify({ error: err.message })); }
   });
-
   proxyReq.end();
+}
+
+const server = http.createServer((req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+  if (req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok' }));
+    return;
+  }
+  const path = req.url.replace(/^\/tab/, '');
+  makeTabRequest(path, res);
 });
 
 server.listen(PORT, () => {
