@@ -11,9 +11,9 @@
  * inner array handles dead heats. results[0][0] is winner's runner number.
  */
 
-// In development: proxy runs at localhost:5175
-// In production: set VITE_PROXY_URL to your deployed proxy URL (e.g. https://sweep-proxy.onrender.com)
-const BASE = (import.meta.env.VITE_PROXY_URL || 'http://localhost:5175') + '/tab/v1/tab-info-service';
+// In development: proxy runs at localhost:5175 via vite.config.js
+// In production: Vercel Edge Function at /api/tab proxies to api.beta.tab.com.au
+const BASE = (import.meta.env.VITE_PROXY_URL || '/api') + '/tab/v1/tab-info-service';
 const JURISDICTION = 'QLD';
 
 async function tabFetch(path) {
