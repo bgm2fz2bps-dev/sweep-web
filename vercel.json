@@ -5,9 +5,5 @@
     "api/tab/[...path].js": {
       "regions": ["syd1"]
     }
-  },
-  "routes": [
-    { "handle": "filesystem" },
-    { "src": "/(.*)", "dest": "/index.html" }
-  ]
+  }
 }
