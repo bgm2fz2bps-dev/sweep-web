@@ -1,7 +1,3 @@
-export const config = {
-  regions: ['syd1'],
-};
-
 export default async function handler(req, res) {
   // Strip /api/tab prefix, forward to TAB API
   const tabPath = req.url.replace(/^\/api\/tab/, '');
