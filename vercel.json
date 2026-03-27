@@ -2,8 +2,11 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "functions": {
-    "api/tab/[...path].js": {
+    "api/[...path].js": {
       "regions": ["syd1"]
     }
-  }
+  },
+  "rewrites": [
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ]
 }
