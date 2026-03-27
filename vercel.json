@@ -2,11 +2,23 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "functions": {
-    "api/[...path].js": {
-      "regions": ["syd1"]
+    "api/tab/proxy.js": {
+      "regions": [
+        "syd1"
+      ]
     }
   },
-  "rewrites": [
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  "routes": [
+    {
+      "src": "/api/tab/(.*)",
+      "dest": "/api/tab/proxy?path=$1"
+    },
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
+    }
   ]
 }
