@@ -4,7 +4,7 @@ import {
   doc, onSnapshot, collection, updateDoc, writeBatch,
   getDocs, addDoc, serverTimestamp, query, orderBy, arrayUnion
 } from 'firebase/firestore';
-import { auth, db } from '../firebase';
+import { db } from '../firebase';
 import { getSessionId } from '../identity';
 import { MELBOURNE_CUP_HORSES } from '../data/horses';
 import { fetchRaceDetail, getFinisherRunnerNumber, runnerByNumber } from '../tabApi';
@@ -61,6 +61,12 @@ function LobbyView({ sweep, sweepId, entries, currentUid }) {
       const currentCount = entries.length;
       if (currentCount >= (sweep.maxEntries || 24)) {
         setJoinError("She's chockers! No spots left.");
+        return;
+      }
+      const currentUserEntries = entries.filter(e => e.userId === currentUid).length;
+      const maxPerPerson = sweep.maxEntriesPerPerson || 1;
+      if (currentUserEntries >= maxPerPerson) {
+        setJoinError(`You can only claim up to ${maxPerPerson} spot${maxPerPerson !== 1 ? 's' : ''}.`);
         return;
       }
       const displayName = localStorage.getItem('sweepDisplayName') || 'Anonymous';
@@ -162,6 +168,12 @@ function LobbyView({ sweep, sweepId, entries, currentUid }) {
             <span style={{ color: 'var(--muted)' }}>Spots: </span>
             <span style={{ color: 'var(--white)', fontWeight: 700 }}>{entries.length} / {sweep.maxEntries || 24}</span>
           </div>
+          {(sweep.maxEntriesPerPerson || 1) > 1 && (
+            <div style={{ fontSize: '0.8rem' }}>
+              <span style={{ color: 'var(--muted)' }}>Per person: </span>
+              <span style={{ color: 'var(--white)', fontWeight: 700 }}>max {sweep.maxEntriesPerPerson}</span>
+            </div>
+          )}
           {hasTAB(sweep) && (
             <div style={{ fontSize: '0.8rem' }}>
               <span style={{ color: 'var(--yellow)', fontWeight: 600 }}>🏇 TAB Linked</span>
@@ -328,7 +340,17 @@ function DrawReveal({ sweep, sweepId, entries, currentUid }) {
 // ─── Race Day (racing) ───────────────────────────────────────────────────────
 
 const POLL_INTERVAL_MS = 30_000;
-const RESULTED_STATUSES = new Set(['Resulted', 'Paying']);
+const RESULTED_STATUSES = new Set(['Resulted', 'Paying', 'Interim']);
+
+const TAB_STATUS_LABEL = {
+  Normal: 'Not yet started',
+  Open: 'Open for betting',
+  Closed: 'Closed — race imminent',
+  Interim: 'Interim result',
+  Paying: 'Paying out',
+  Resulted: 'Final result',
+  Abandoned: 'Abandoned',
+};
 
 function RaceDayView({ sweep, sweepId, entries, currentUid }) {
   const [showResultsForm, setShowResultsForm] = useState(false);
@@ -489,7 +511,7 @@ function RaceDayView({ sweep, sweepId, entries, currentUid }) {
           <span style={{ fontSize: '1.2rem' }}>⏳</span>
           <div>
             <strong>Waiting for race results...</strong>
-            {pollStatus && <> Race status: <strong>{pollStatus}</strong>.</>}
+            {pollStatus && <> Race status: <strong>{TAB_STATUS_LABEL[pollStatus] ?? pollStatus}</strong>.</>}
             {' '}Polling TAB every 30 seconds.
             {autoResultError && <div style={{ color: 'var(--error)', marginTop: '4px' }}>{autoResultError}</div>}
           </div>
