@@ -35,28 +35,63 @@ export function todayDate() {
 }
 
 /**
- * Fetches all thoroughbred (raceType R) meetings for today.
+ * Fetches all AU meetings for a given date, all race types (R/H/G).
  * Returns array of { meetingName, venueMnemonic, raceType, location, races[] }
  * where races[] = [{ raceNumber, raceName, raceStartTime, raceStatus }]
  */
-export async function fetchTodaysMeetings(date) {
-  const d = date || todayDate();
-  const data = await tabFetch(`/racing/dates/${d}/meetings`);
+async function fetchMeetingsForDate(date) {
+  const FINISHED = new Set(['Paying', 'Interim', 'Resulted', 'Abandoned', 'Closed']);
+  const AU_STATES = new Set(['ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA']);
+  const now = Date.now();
+  const data = await tabFetch(`/racing/dates/${date}/meetings`);
   const meetings = data.meetings || [];
   return meetings
-    .filter(m => m.raceType === 'R')
+    .filter(m => AU_STATES.has(m.location))
     .map(m => ({
       meetingName: m.meetingName,
       venueMnemonic: m.venueMnemonic,
       raceType: m.raceType,
       location: m.location,
-      races: (m.races || []).map(r => ({
-        raceNumber: r.raceNumber,
-        raceName: r.raceName || `Race ${r.raceNumber}`,
-        raceStartTime: r.raceStartTime,
-        raceStatus: r.raceStatus,
-      })),
+      date,
+      races: (m.races || [])
+        .filter(r => {
+          if (FINISHED.has(r.raceStatus)) return false;
+          if (!r.raceStartTime) return true;
+          return new Date(r.raceStartTime).getTime() - now > 15 * 60 * 1000;
+        })
+        .map(r => ({
+          raceNumber: r.raceNumber,
+          raceName: r.raceName || `Race ${r.raceNumber}`,
+          raceStartTime: r.raceStartTime,
+          raceStatus: r.raceStatus,
+          raceDistance: r.raceDistance ?? null,
+        })),
     }));
+}
+
+/**
+ * Fetches today's and tomorrow's Australian meetings (all race types: R/H/G) with open races.
+ * Returns array of { meetingName, venueMnemonic, raceType, location, date, races[], dateLabel }
+ */
+export async function fetchTodaysMeetings() {
+  const today = todayDate();
+  const tomorrow = (() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  })();
+  const [todayMeetings, tomorrowMeetings] = await Promise.all([
+    fetchMeetingsForDate(today),
+    fetchMeetingsForDate(tomorrow),
+  ]);
+  const withLabel = (meetings, label) =>
+    meetings
+      .filter(m => m.races.length > 0)
+      .map(m => ({ ...m, dateLabel: label }));
+  return [
+    ...withLabel(todayMeetings, 'Today'),
+    ...withLabel(tomorrowMeetings, 'Tomorrow'),
+  ];
 }
 
 /**
