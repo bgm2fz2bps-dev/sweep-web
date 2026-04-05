@@ -363,6 +363,7 @@ function RaceDayView({ sweep, sweepId, entries, currentUid }) {
   // TAB auto-results polling
   const [pollStatus, setPollStatus] = useState('');   // human-readable status string
   const [autoResultError, setAutoResultError] = useState('');
+  const [raceStartTime, setRaceStartTime] = useState(null);
   const pollTimerRef = useRef(null);
   const isSavingRef = useRef(false);
 
@@ -428,6 +429,7 @@ function RaceDayView({ sweep, sweepId, entries, currentUid }) {
         sweep.tabRaceNumber
       );
       setPollStatus(detail.raceStatus || 'Unknown');
+      if (detail.raceStartTime && !raceStartTime) setRaceStartTime(detail.raceStartTime);
 
       if (RESULTED_STATUSES.has(detail.raceStatus)) {
         // Race is done — save results and transition
@@ -556,7 +558,15 @@ function RaceDayView({ sweep, sweepId, entries, currentUid }) {
         })}
       </div>
 
-      {isCreator && !showResultsForm && (
+      {isCreator && !showResultsForm && (() => {
+        // For non-TAB sweeps: always show
+        if (!tabEnabled) return true;
+        // For TAB sweeps: only show if auto-results failed AND 2h have passed since race start
+        if (!autoResultError) return false;
+        if (!raceStartTime) return false;
+        const twoHoursAfterStart = new Date(raceStartTime).getTime() + 2 * 60 * 60 * 1000;
+        return Date.now() > twoHoursAfterStart;
+      })() && (
         <button
           className="btn btn-primary btn-full btn-lg"
           onClick={() => setShowResultsForm(true)}
