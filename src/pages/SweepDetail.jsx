@@ -598,8 +598,8 @@ function RaceDayView({ sweep, sweepId, entries, currentUid }) {
       {isCreator && !showResultsForm && (() => {
         // For non-TAB sweeps: always show
         if (!tabEnabled) return true;
-        // For TAB sweeps: only show if auto-results failed AND 2h have passed since race start
-        if (!autoResultError) return false;
+        // For TAB sweeps: show only after 2h past race start (gives TAB time to result)
+        // No requirement for autoResultError — page may not have been open when race finished
         if (!raceStartTime) return false;
         const twoHoursAfterStart = new Date(raceStartTime).getTime() + 2 * 60 * 60 * 1000;
         return Date.now() > twoHoursAfterStart;
