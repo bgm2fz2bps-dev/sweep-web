@@ -41,6 +41,42 @@ function hasTAB(sweep) {
   return !!(sweep?.tabVenueMnemonic && sweep?.tabRaceNumber && sweep?.tabDate && sweep?.tabRaceType);
 }
 
+function Countdown({ targetIso }) {
+  const [display, setDisplay] = useState('');
+
+  useEffect(() => {
+    function tick() {
+      const diff = new Date(targetIso).getTime() - Date.now();
+      if (diff <= 0) {
+        setDisplay('Race underway 🏇');
+        return;
+      }
+      const h = Math.floor(diff / 3600000);
+      const m = Math.floor((diff % 3600000) / 60000);
+      const s = Math.floor((diff % 60000) / 1000);
+      if (h > 0) {
+        setDisplay(`${h}h ${String(m).padStart(2,'0')}m ${String(s).padStart(2,'0')}s`);
+      } else {
+        setDisplay(`${m}m ${String(s).padStart(2,'0')}s`);
+      }
+    }
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [targetIso]);
+
+  return (
+    <div style={{ textAlign: 'center', padding: '12px 0 4px' }}>
+      <div style={{ fontSize: '0.75rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '4px' }}>
+        Race starts in
+      </div>
+      <div style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--yellow)', fontVariantNumeric: 'tabular-nums' }}>
+        {display}
+      </div>
+    </div>
+  );
+}
+
 // ─── Lobby (open) ────────────────────────────────────────────────────────────
 
 function LobbyView({ sweep, sweepId, entries, currentUid }) {
@@ -740,6 +776,7 @@ export default function SweepDetail() {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [raceStartTime, setRaceStartTime] = useState(null);
 
   const currentUid = getSessionId();
 
@@ -780,6 +817,14 @@ export default function SweepDetail() {
     return () => { sweepUnsub(); entriesUnsub(); };
   }, [sweepId]);
 
+  // Fetch race start time once for TAB-linked sweeps that haven't completed yet
+  useEffect(() => {
+    if (!sweep || !hasTAB(sweep) || sweep.status === 'completed' || raceStartTime) return;
+    fetchRaceDetail(sweep.tabDate, sweep.tabRaceType, sweep.tabVenueMnemonic, sweep.tabRaceNumber)
+      .then(detail => { if (detail.raceStartTime) setRaceStartTime(detail.raceStartTime); })
+      .catch(() => {});
+  }, [sweep?.id]);
+
   if (loading) {
     return (
       <div className="loading-state" style={{ minHeight: '60vh' }}>
@@ -810,6 +855,10 @@ export default function SweepDetail() {
           ← Home
         </Link>
       </div>
+
+      {raceStartTime && sweep.status !== 'completed' && (
+        <Countdown targetIso={raceStartTime} />
+      )}
 
       {sweep.status === 'open' && (
         <LobbyView
