@@ -340,14 +340,15 @@ function DrawReveal({ sweep, sweepId, entries, currentUid }) {
 // ─── Race Day (racing) ───────────────────────────────────────────────────────
 
 const POLL_INTERVAL_MS = 30_000;
-const RESULTED_STATUSES = new Set(['Resulted', 'Paying', 'Interim']);
+// Only save results once protests are resolved and result is truly final
+const RESULTED_STATUSES = new Set(['Resulted']);
 
 const TAB_STATUS_LABEL = {
   Normal: 'Not yet started',
   Open: 'Open for betting',
   Closed: 'Closed — race imminent',
-  Interim: 'Interim result',
-  Paying: 'Paying out',
+  Interim: 'Interim — awaiting protest resolution',
+  Paying: 'Paying out — awaiting final result',
   Resulted: 'Final result',
   Abandoned: 'Abandoned',
 };

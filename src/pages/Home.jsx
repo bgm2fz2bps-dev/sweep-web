@@ -111,45 +111,53 @@ export default function Home() {
         <div className="loading-state"><div className="loading-spinner" /></div>
       ) : (
         <>
-          {mySweeps.length > 0 && (
-            <section style={{ marginBottom: '32px' }}>
-              <p className="section-title">My Sweeps</p>
-              <div className="entry-list">
-                {mySweeps.map(sweep => (
-                  <Link key={sweep.id} to={`/sweep/${sweep.id}`} className="card card-link" style={{ textDecoration: 'none' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
-                      <div>
-                        <div style={{ fontWeight: 700, color: 'var(--white)', marginBottom: '4px' }}>{sweep.name}</div>
-                        <div style={{ fontSize: '0.8rem', color: 'var(--muted-light)' }}>
-                          {sweep.race} &middot; Code: <span style={{ color: 'var(--yellow)', fontWeight: 700 }}>{sweep.joinCode}</span>
-                        </div>
-                      </div>
-                      <StatusBadge status={sweep.status} />
-                    </div>
-                  </Link>
-                ))}
-              </div>
-            </section>
-          )}
+          {(() => {
+            const allSweeps = [
+              ...mySweeps.map(s => ({ ...s, _role: 'created' })),
+              ...joinedSweeps.map(s => ({ ...s, _role: 'joined' })),
+            ];
+            const live = allSweeps.filter(s => s.status !== 'completed');
+            const past = allSweeps.filter(s => s.status === 'completed');
 
-          {joinedSweeps.length > 0 && (
-            <section>
-              <p className="section-title">Sweeps I&apos;ve Joined</p>
-              <div className="entry-list">
-                {joinedSweeps.map(sweep => (
-                  <Link key={sweep.id} to={`/sweep/${sweep.id}`} className="card card-link" style={{ textDecoration: 'none' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
-                      <div>
-                        <div style={{ fontWeight: 700, color: 'var(--white)', marginBottom: '4px' }}>{sweep.name}</div>
-                        <div style={{ fontSize: '0.8rem', color: 'var(--muted-light)' }}>{sweep.race}</div>
-                      </div>
-                      <StatusBadge status={sweep.status} />
+            const SweepCard = ({ sweep }) => (
+              <Link key={sweep.id} to={`/sweep/${sweep.id}`} className="card card-link" style={{ textDecoration: 'none' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
+                  <div>
+                    <div style={{ fontWeight: 700, color: 'var(--white)', marginBottom: '4px' }}>{sweep.name}</div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--muted-light)' }}>
+                      {sweep.race}
+                      {sweep._role === 'created' && sweep.joinCode && (
+                        <> &middot; Code: <span style={{ color: 'var(--yellow)', fontWeight: 700 }}>{sweep.joinCode}</span></>
+                      )}
                     </div>
-                  </Link>
-                ))}
-              </div>
-            </section>
-          )}
+                  </div>
+                  <StatusBadge status={sweep.status} />
+                </div>
+              </Link>
+            );
+
+            return (
+              <>
+                {live.length > 0 && (
+                  <section style={{ marginBottom: '32px' }}>
+                    <p className="section-title">My Sweeps</p>
+                    <div className="entry-list">
+                      {live.map(sweep => <SweepCard key={sweep.id} sweep={sweep} />)}
+                    </div>
+                  </section>
+                )}
+
+                {past.length > 0 && (
+                  <section style={{ marginBottom: '32px' }}>
+                    <p className="section-title" style={{ color: 'var(--muted)' }}>Past Sweeps</p>
+                    <div className="entry-list">
+                      {past.map(sweep => <SweepCard key={sweep.id} sweep={sweep} />)}
+                    </div>
+                  </section>
+                )}
+              </>
+            );
+          })()}
 
           {mySweeps.length === 0 && joinedSweeps.length === 0 && (
             <div className="empty-state">
