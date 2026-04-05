@@ -149,7 +149,7 @@ export default function CreateSweep() {
         creatorId: uid,
         status: 'open',
         createdAt: serverTimestamp(),
-        participantIds: [uid],
+        participantIds: [],
       };
 
       if (!useManual && selectedMeeting && selectedRace) {
@@ -161,13 +161,6 @@ export default function CreateSweep() {
       }
 
       await setDoc(sweepRef, sweepData);
-      await addDoc(collection(db, 'sweeps', sweepId, 'entries'), {
-        userId: uid,
-        displayName,
-        horseId: null,
-        horseName: null,
-        joinedAt: serverTimestamp(),
-      });
 
       navigate(`/sweep/${sweepId}`);
     } catch (err) {
