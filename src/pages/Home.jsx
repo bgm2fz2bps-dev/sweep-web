@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
-import { getSessionId } from '../identity';
+import { getLocalSweepIds } from '../identity';
 
 function StatusBadge({ status }) {
   const map = {
@@ -19,37 +19,27 @@ export default function Home() {
   const navigate = useNavigate();
   const [joinCode, setJoinCode] = useState('');
   const [mySweeps, setMySweeps] = useState([]);
-  const [joinedSweeps, setJoinedSweeps] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const uid = getSessionId();
+    const ids = getLocalSweepIds();
+    if (ids.length === 0) { setLoading(false); return; }
 
-    // Listen to sweeps created by this user
-    const createdQ = query(
-      collection(db, 'sweeps'),
-      where('creatorId', '==', uid)
+    // Subscribe to each sweep by ID
+    const unsubs = ids.map(id =>
+      onSnapshot(doc(db, 'sweeps', id), (snap) => {
+        if (!snap.exists()) return;
+        const sweep = { id: snap.id, ...snap.data() };
+        setMySweeps(prev => {
+          const others = prev.filter(s => s.id !== id);
+          return [...others, sweep].sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+        });
+        setLoading(false);
+      }, () => setLoading(false))
     );
-    const unsub1 = onSnapshot(createdQ, (snap) => {
-      const sweeps = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      sweeps.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-      setMySweeps(sweeps);
-      setLoading(false);
-    }, () => setLoading(false));
+    setLoading(false);
 
-    // Listen to sweeps where user has joined as participant (not creator)
-    const joinedQ = query(
-      collection(db, 'sweeps'),
-      where('participantIds', 'array-contains', uid)
-    );
-    const unsub2 = onSnapshot(joinedQ, (snap) => {
-      const sweeps = snap.docs
-        .map(d => ({ id: d.id, ...d.data() }))
-        .filter(s => s.creatorId !== uid);
-      setJoinedSweeps(sweeps);
-    });
-
-    return () => { unsub1(); unsub2(); };
+    return () => unsubs.forEach(u => u());
   }, []);
 
   const handleJoin = (e) => {
@@ -112,10 +102,7 @@ export default function Home() {
       ) : (
         <>
           {(() => {
-            const allSweeps = [
-              ...mySweeps.map(s => ({ ...s, _role: 'created' })),
-              ...joinedSweeps.map(s => ({ ...s, _role: 'joined' })),
-            ];
+            const allSweeps = mySweeps;
             const live = allSweeps.filter(s => s.status !== 'completed');
             const past = allSweeps.filter(s => s.status === 'completed');
 
@@ -126,7 +113,7 @@ export default function Home() {
                     <div style={{ fontWeight: 700, color: 'var(--white)', marginBottom: '4px' }}>{sweep.name}</div>
                     <div style={{ fontSize: '0.8rem', color: 'var(--muted-light)' }}>
                       {sweep.race}
-                      {sweep._role === 'created' && sweep.joinCode && (
+                      {sweep.joinCode && (
                         <> &middot; Code: <span style={{ color: 'var(--yellow)', fontWeight: 700 }}>{sweep.joinCode}</span></>
                       )}
                     </div>
@@ -159,7 +146,7 @@ export default function Home() {
             );
           })()}
 
-          {mySweeps.length === 0 && joinedSweeps.length === 0 && (
+          {mySweeps.length === 0 && (
             <div className="empty-state">
               <div className="empty-icon">🎠</div>
               <p style={{ fontWeight: 600, color: 'var(--muted-light)', marginBottom: '8px' }}>

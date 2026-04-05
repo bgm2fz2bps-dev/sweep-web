@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
+import { saveSweepLocally } from '../identity';
 
 export default function JoinSweep() {
   const { code } = useParams();
@@ -30,6 +31,7 @@ export default function JoinSweep() {
       }
 
       const sweepId = snap.docs[0].id;
+      saveSweepLocally(sweepId);
       navigate(`/sweep/${sweepId}`, { replace: true });
     } catch (err) {
       console.error('Join sweep failed:', err);

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { collection, doc, setDoc, addDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
-import { getSessionId } from '../identity';
+import { getSessionId, saveSweepLocally } from '../identity';
 import { fetchTodaysMeetings, fetchRaceDetail } from '../tabApi';
 
 function generateJoinCode() {
@@ -161,7 +161,7 @@ export default function CreateSweep() {
       }
 
       await setDoc(sweepRef, sweepData);
-
+      saveSweepLocally(sweepId);
       navigate(`/sweep/${sweepId}`);
     } catch (err) {
       console.error('Create sweep failed:', err);
