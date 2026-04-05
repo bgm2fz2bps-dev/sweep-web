@@ -1,9 +1,14 @@
 export default async function handler(req, res) {
-  // In Vercel, req.query.path is the catch-all array: ['v1', 'tab-info-service', ...]
-  const pathSegments = req.query.path || [];
+  // In Vercel, req.query.path can be either:
+  // - a string: 'v1/tab-info-service/racing/dates/...'
+  // - an array: ['v1', 'tab-info-service', ...]
+  let pathSegments = req.query.path || [];
+  if (typeof pathSegments === 'string') {
+    pathSegments = pathSegments.split('/').filter(Boolean);
+  }
   const tabPath = '/' + pathSegments.join('/');
 
-  // Build query string from req.query, excluding the 'path' array
+  // Build query string from req.query, excluding the 'path' parameter
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(req.query)) {
     if (key !== 'path') {
