@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { collection, doc, setDoc, addDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../firebase';
+import { auth, db } from '../firebase';
 import { getSessionId } from '../identity';
-import { fetchTodaysMeetings, fetchRaceDetail } from '../tabApi';
+import { fetchTodaysMeetings, fetchRaceDetail, todayDate } from '../tabApi';
 
 function generateJoinCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -21,59 +21,61 @@ function formatTime(isoString) {
 
 export default function CreateSweep() {
   const navigate = useNavigate();
-  const [form, setForm] = useState({ name: '', race: '', entryFee: '', maxEntries: 24, maxEntriesPerPerson: 1 });
+  const [form, setForm] = useState({
+    name: '',
+    race: 'Melbourne Cup 2025',
+    entryFee: '',
+    maxEntries: 24,
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // Race type segmented selector
-  const RACE_TYPES = [
-    { key: 'R', label: 'Thoroughbred', emoji: '🐎' },
-    { key: 'H', label: 'Harness',      emoji: '🐴' },
-    { key: 'G', label: 'Greyhounds',    emoji: '🐕' },
-  ];
-
-  // TAB race state
+  // TAB race linking state
+  const [useTab, setUseTab] = useState(false);
   const [meetings, setMeetings] = useState([]);
-  const [meetingsLoading, setMeetingsLoading] = useState(true);
+  const [meetingsLoading, setMeetingsLoading] = useState(false);
   const [meetingsError, setMeetingsError] = useState('');
-  const [raceTypeFilter, setRaceTypeFilter] = useState('R');
-  const [openMeetings, setOpenMeetings] = useState({});
   const [selectedMeeting, setSelectedMeeting] = useState(null);
   const [selectedRace, setSelectedRace] = useState(null);
   const [raceDetail, setRaceDetail] = useState(null);
   const [raceDetailLoading, setRaceDetailLoading] = useState(false);
-  const [racePickerOpen, setRacePickerOpen] = useState(true);
-
-  // Manual entry fallback
-  const [useManual, setUseManual] = useState(false);
 
   const update = (field) => (e) => setForm(f => ({ ...f, [field]: e.target.value }));
 
-  // Fetch meetings on mount
+  // When TAB toggle is turned on, fetch today's meetings
   useEffect(() => {
+    if (!useTab) return;
+    setMeetingsLoading(true);
+    setMeetingsError('');
     fetchTodaysMeetings()
       .then(data => {
         setMeetings(data);
-        if (data.length === 0) setMeetingsError('No races found for today or tomorrow.');
+        if (data.length === 0) setMeetingsError('No thoroughbred meetings found for today.');
       })
       .catch(err => {
         console.error('Meetings fetch failed:', err);
-        setMeetingsError('Could not load TAB races. Check your connection.');
+        setMeetingsError('Could not load TAB meetings. Check your connection.');
       })
       .finally(() => setMeetingsLoading(false));
-  }, []);
+  }, [useTab]);
 
-  // Fetch runners when a race is selected
+  // When a race is selected, fetch its runners
   useEffect(() => {
     if (!selectedMeeting || !selectedRace) return;
     setRaceDetailLoading(true);
     setRaceDetail(null);
-    fetchRaceDetail(selectedMeeting.date, selectedMeeting.raceType, selectedMeeting.venueMnemonic, selectedRace.raceNumber)
+    const date = todayDate();
+    fetchRaceDetail(date, selectedMeeting.raceType, selectedMeeting.venueMnemonic, selectedRace.raceNumber)
       .then(detail => {
         setRaceDetail(detail);
-        const raceName = `${selectedMeeting.meetingName} R${selectedRace.raceNumber}${selectedRace.raceName ? ` — ${selectedRace.raceName}` : ''}`;
-        // For TAB sweeps, maxEntries always equals the runner count (adapts if scratches happen)
-        setForm(f => ({ ...f, race: raceName, maxEntries: detail.runners.length }));
+        // Auto-fill form fields from the selected race
+        const raceName = `${selectedMeeting.meetingName} Race ${selectedRace.raceNumber}`;
+        const runnerCount = detail.runners.length;
+        setForm(f => ({
+          ...f,
+          race: raceName,
+          maxEntries: Math.min(runnerCount, 24),
+        }));
       })
       .catch(err => {
         console.error('Race detail fetch failed:', err);
@@ -82,53 +84,51 @@ export default function CreateSweep() {
       .finally(() => setRaceDetailLoading(false));
   }, [selectedMeeting, selectedRace]);
 
-  const handleRaceTypeChange = (type) => {
-    setRaceTypeFilter(type);
-    setOpenMeetings({});
-    setSelectedMeeting(null);
+  const handleMeetingChange = (e) => {
+    const m = meetings.find(m => m.venueMnemonic === e.target.value) || null;
+    setSelectedMeeting(m);
     setSelectedRace(null);
     setRaceDetail(null);
-    setRacePickerOpen(true);
-    setForm(f => ({ ...f, race: '', maxEntries: 24, maxEntriesPerPerson: 1 }));
   };
 
-  const toggleMeeting = (key) => {
-    setOpenMeetings(prev => ({ ...prev, [key]: !prev[key] }));
-  };
-
-  const handleRaceCardClick = (meeting, race) => {
-    setSelectedMeeting(meeting);
-    setSelectedRace(race);
+  const handleRaceChange = (e) => {
+    if (!selectedMeeting) return;
+    const raceNum = parseInt(e.target.value, 10);
+    const r = selectedMeeting.races.find(r => r.raceNumber === raceNum) || null;
+    setSelectedRace(r);
     setRaceDetail(null);
-    setRacePickerOpen(false);
   };
 
-  const switchToManual = () => {
-    setUseManual(true);
-    setSelectedMeeting(null);
-    setSelectedRace(null);
-    setRaceDetail(null);
-    setRacePickerOpen(true);
-    setForm(f => ({ ...f, race: '', maxEntries: 24, maxEntriesPerPerson: 1 }));
-  };
-
-  // Derive filtered meetings outside JSX so it's always fresh on every render
-  const filteredMeetings = meetings.filter(
-    m => m.raceType === raceTypeFilter && m.races.length > 0
-  );
-
-  const switchToTab = () => {
-    setUseManual(false);
-    setForm(f => ({ ...f, race: '', maxEntries: 24 }));
+  const handleTabToggle = (e) => {
+    const on = e.target.checked;
+    setUseTab(on);
+    if (!on) {
+      // Reset TAB state and restore defaults
+      setSelectedMeeting(null);
+      setSelectedRace(null);
+      setRaceDetail(null);
+      setMeetings([]);
+      setMeetingsError('');
+      setForm(f => ({ ...f, race: 'Melbourne Cup 2025', maxEntries: 24 }));
+    }
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
 
-    if (!form.name.trim()) { setError('Give your sweep a name, legend.'); return; }
-    if (!useManual && (!selectedMeeting || !selectedRace)) { setError('Pick a race first.'); return; }
-    if (useManual && !form.race.trim()) { setError("You'll need a race name."); return; }
+    if (!form.name.trim()) {
+      setError('Give your sweep a name, legend.');
+      return;
+    }
+    if (!form.race.trim()) {
+      setError("You'll need a race name.");
+      return;
+    }
+    if (useTab && (!selectedMeeting || !selectedRace)) {
+      setError('Pick a TAB meeting and race, or disable the TAB link.');
+      return;
+    }
 
     const uid = getSessionId();
     const displayName = localStorage.getItem('sweepDisplayName') || 'Anonymous';
@@ -144,7 +144,6 @@ export default function CreateSweep() {
         race: form.race.trim(),
         entryFee: form.entryFee ? form.entryFee.trim() : null,
         maxEntries: parseInt(form.maxEntries, 10) || 24,
-        maxEntriesPerPerson: parseInt(form.maxEntriesPerPerson, 10) || 1,
         joinCode,
         creatorId: uid,
         status: 'open',
@@ -152,8 +151,9 @@ export default function CreateSweep() {
         participantIds: [uid],
       };
 
-      if (!useManual && selectedMeeting && selectedRace) {
-        sweepData.tabDate = selectedMeeting.date;
+      // Store TAB fields if a race was linked
+      if (useTab && selectedMeeting && selectedRace) {
+        sweepData.tabDate = todayDate();
         sweepData.tabRaceType = selectedMeeting.raceType;
         sweepData.tabVenueMnemonic = selectedMeeting.venueMnemonic;
         sweepData.tabRaceNumber = selectedRace.raceNumber;
@@ -161,7 +161,9 @@ export default function CreateSweep() {
       }
 
       await setDoc(sweepRef, sweepData);
-      await addDoc(collection(db, 'sweeps', sweepId, 'entries'), {
+
+      const entriesRef = collection(db, 'sweeps', sweepId, 'entries');
+      await addDoc(entriesRef, {
         userId: uid,
         displayName,
         horseId: null,
@@ -181,30 +183,165 @@ export default function CreateSweep() {
   return (
     <div className="page" style={{ maxWidth: '560px' }}>
       <div style={{ marginBottom: '28px' }}>
-        <Link to="/" style={{ color: 'var(--muted)', fontSize: '0.875rem', textDecoration: 'none' }}>← Back</Link>
+        <Link to="/" style={{ color: 'var(--muted)', fontSize: '0.875rem', textDecoration: 'none' }}>
+          ← Back
+        </Link>
         <h2 style={{ marginTop: '16px' }}>Create a Sweep</h2>
-        <p style={{ color: 'var(--muted-light)', marginTop: '4px' }}>Set it up, share the code, and let fate decide. 🎲</p>
+        <p style={{ color: 'var(--muted-light)', marginTop: '4px' }}>
+          Set it up, share the code, and let fate decide. 🎲
+        </p>
       </div>
 
       {error && <div className="alert alert-error">{error}</div>}
 
       <form onSubmit={handleSubmit} className="card">
+        {/* TAB race link toggle — race picker comes first */}
+        <div className="form-group">
+          <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', userSelect: 'none' }}>
+            <input
+              type="checkbox"
+              checked={useTab}
+              onChange={handleTabToggle}
+              style={{ width: '18px', height: '18px', cursor: 'pointer', accentColor: 'var(--yellow)' }}
+            />
+            <span className="form-label" style={{ margin: 0 }}>🏇 Link to a TAB race today</span>
+          </label>
+          <p style={{ color: 'var(--muted)', fontSize: '0.8rem', marginTop: '6px', marginLeft: '28px' }}>
+            Auto-fills runners from TAB and polls for results when the race finishes.
+          </p>
+        </div>
 
-        {/* ── TAB race picker (default) ── */}
-        {!useManual && (
+        {useTab && (
+          <div style={{ marginBottom: '8px' }}>
+            {meetingsLoading && (
+              <div className="alert alert-info" style={{ fontSize: '0.85rem' }}>
+                Loading today's meetings...
+              </div>
+            )}
+            {meetingsError && (
+              <div className="alert alert-error" style={{ fontSize: '0.85rem' }}>{meetingsError}</div>
+            )}
+            {!meetingsLoading && meetings.length > 0 && (
+              <>
+                <div className="form-group">
+                  <label className="form-label">Meeting</label>
+                  <select
+                    className="input"
+                    value={selectedMeeting?.venueMnemonic || ''}
+                    onChange={handleMeetingChange}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    <option value="">Select a meeting...</option>
+                    {meetings.map(m => (
+                      <option key={m.venueMnemonic} value={m.venueMnemonic}>
+                        {m.meetingName} ({m.location})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {selectedMeeting && (
+                  <div className="form-group">
+                    <label className="form-label">Race</label>
+                    <select
+                      className="input"
+                      value={selectedRace?.raceNumber || ''}
+                      onChange={handleRaceChange}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      <option value="">Select a race...</option>
+                      {selectedMeeting.races.map(r => (
+                        <option key={r.raceNumber} value={r.raceNumber}>
+                          Race {r.raceNumber}{r.raceName ? ` — ${r.raceName}` : ''}{r.raceStartTime ? ` (${formatTime(r.raceStartTime)})` : ''} [{r.raceStatus}]
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {raceDetailLoading && (
+                  <div className="alert alert-info" style={{ fontSize: '0.85rem' }}>Loading runners...</div>
+                )}
+
+                {raceDetail && !raceDetailLoading && (
+                  <div className="alert alert-info" style={{ fontSize: '0.85rem' }}>
+                    ✅ <strong>{raceDetail.runners.length} runners</strong> loaded from TAB.
+                    Max entries auto-set to {raceDetail.runners.length}.
+                    {raceDetail.raceStatus && <> Race status: <strong>{raceDetail.raceStatus}</strong>.</>}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        <div className="form-group" style={{ borderTop: '1px solid var(--border)', paddingTop: '20px' }}>
+          <label className="form-label">Sweep Name</label>
+          <input
+            className="input"
+            type="text"
+            placeholder="e.g. Work Cup Sweep 2025"
+            value={form.name}
+            onChange={update('name')}
+            maxLength={60}
+            autoFocus
+          />
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Race</label>
+          <input
+            className="input"
+            type="text"
+            placeholder="Melbourne Cup 2025"
+            value={form.race}
+            onChange={update('race')}
+            maxLength={80}
+            readOnly={useTab && !!raceDetail}
+            style={useTab && raceDetail ? { opacity: 0.7, cursor: 'default' } : {}}
+          />
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
           <div className="form-group">
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
-              <label className="form-label" style={{ margin: 0 }}>🏇 Pick a race</label>
-              {selectedRace && !racePickerOpen && (
-                <button type="button" onClick={() => {
-                  setRacePickerOpen(true);
-                  if (selectedMeeting) {
-                    const key = `${selectedMeeting.dateLabel}-${selectedMeeting.venueMnemonic}`;
-                    setOpenMeetings(prev => ({ ...prev, [key]: true }));
-                  }
-                }}
-                style={{ fontSize: '0.8rem', color: 'var(--yellow)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontWeight: 600 }}>
-                  Change
-                </button>
-              )
-�}� End of B64 content - Must use READ to get full content
+            <label className="form-label">Entry Fee (display only)</label>
+            <input
+              className="input"
+              type="text"
+              placeholder="e.g. $10"
+              value={form.entryFee}
+              onChange={update('entryFee')}
+              maxLength={20}
+            />
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">Max Entries</label>
+            <input
+              className="input"
+              type="number"
+              min={2}
+              max={24}
+              value={form.maxEntries}
+              onChange={update('maxEntries')}
+              readOnly={useTab && !!raceDetail}
+              style={useTab && raceDetail ? { opacity: 0.7, cursor: 'default' } : {}}
+            />
+          </div>
+        </div>
+
+        <div className="alert alert-info" style={{ marginTop: '8px', marginBottom: '20px', fontSize: '0.85rem' }}>
+          💡 A 6-character join code will be generated automatically. Share it with your mates!
+        </div>
+
+        <button
+          type="submit"
+          className="btn btn-primary btn-full btn-lg"
+          disabled={loading}
+        >
+          {loading ? 'Creating...' : '🚀 Create Sweep'}
+        </button>
+      </form>
+    </div>
+  );
+}
