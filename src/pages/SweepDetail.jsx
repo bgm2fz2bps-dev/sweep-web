@@ -85,6 +85,7 @@ function LobbyView({ sweep, sweepId, entries, currentUid }) {
   const [drawError, setDrawError] = useState('');
   const [joinLoading, setJoinLoading] = useState(false);
   const [joinError, setJoinError] = useState('');
+  const [joinEmail, setJoinEmail] = useState('');
 
   const isCreator = currentUid === sweep.creatorId;
   const isParticipant = entries.some(e => e.userId === currentUid);
@@ -106,13 +107,16 @@ function LobbyView({ sweep, sweepId, entries, currentUid }) {
         return;
       }
       const displayName = localStorage.getItem('sweepDisplayName') || 'Anonymous';
-      await addDoc(collection(db, 'sweeps', sweepId, 'entries'), {
+      const entryData = {
         userId: currentUid,
         displayName,
         horseId: null,
         horseName: null,
         joinedAt: serverTimestamp(),
-      });
+      };
+      const emailTrimmed = joinEmail.trim().toLowerCase();
+      if (emailTrimmed) entryData.email = emailTrimmed;
+      await addDoc(collection(db, 'sweeps', sweepId, 'entries'), entryData);
       await updateDoc(doc(db, 'sweeps', sweepId), {
         participantIds: arrayUnion(currentUid),
       });
@@ -288,6 +292,14 @@ function LobbyView({ sweep, sweepId, entries, currentUid }) {
       {!isCreator && !isParticipant && (
         <div>
           {joinError && <div className="alert alert-error" style={{ marginBottom: '12px' }}>{joinError}</div>}
+          <input
+            type="email"
+            className="form-input"
+            placeholder="Email for results notification (optional)"
+            value={joinEmail}
+            onChange={e => setJoinEmail(e.target.value)}
+            style={{ marginBottom: '10px' }}
+          />
           <button
             className="btn btn-primary btn-full btn-lg"
             onClick={joinSweep}
