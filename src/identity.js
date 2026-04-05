@@ -1,13 +1,13 @@
 /**
- * Returns a stable identity for this browser tab/session.
- * Uses sessionStorage so each tab gets its own UUID.
- * Display name stays in localStorage (shared across tabs on the same device).
+ * Returns a stable identity for this browser/device.
+ * Uses localStorage so it persists across tabs and sessions.
  */
 export function getSessionId() {
-  let id = sessionStorage.getItem('sweepSessionId');
+  let id = localStorage.getItem('sweepSessionId');
   if (!id) {
-    id = crypto.randomUUID();
-    sessionStorage.setItem('sweepSessionId', id);
+    // Migrate from sessionStorage if a session exists (handles old sessions)
+    id = sessionStorage.getItem('sweepSessionId') || crypto.randomUUID();
+    localStorage.setItem('sweepSessionId', id);
   }
   return id;
 }
