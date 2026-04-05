@@ -1,9 +1,27 @@
 export default async function handler(req, res) {
-  // Handle /api/tab/* → TAB API proxy
-  if (req.url && req.url.startsWith('/api/tab/')) {
-    // In Vercel, strip /api/tab prefix and forward to TAB
-    const tabPath = req.url.replace(/^\/api\/tab/, '');
-    const tabUrl = `https://api.beta.tab.com.au${tabPath}`;
+  // In Vercel, req.query.path is the catch-all array from api/[...path].js
+  // e.g., request to /api/tab/v1/... gives path = ['tab', 'v1', ...]
+  const pathSegments = req.query.path || [];
+
+  // TAB API is identified by first segment being 'tab'
+  if (Array.isArray(pathSegments) && pathSegments[0] === 'tab') {
+    // Reconstruct path without the 'tab' prefix: ['v1', 'tab-info-service', ...]
+    const tabPathSegments = pathSegments.slice(1);
+    const tabPath = '/' + tabPathSegments.join('/');
+
+    // Build query string from req.query, excluding the 'path' parameter
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(req.query)) {
+      if (key !== 'path') {
+        if (Array.isArray(value)) {
+          value.forEach(v => params.append(key, v));
+        } else {
+          params.append(key, value);
+        }
+      }
+    }
+    const queryString = params.toString();
+    const tabUrl = `https://api.beta.tab.com.au${tabPath}${queryString ? '?' + queryString : ''}`;
 
     if (req.method === 'OPTIONS') {
       res.setHeader('Access-Control-Allow-Origin', '*');
