@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
-  doc, onSnapshot, collection, updateDoc, writeBatch,
+  doc, getDoc, collection, updateDoc, writeBatch,
   getDocs, addDoc, serverTimestamp, query, orderBy, arrayUnion
 } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -387,7 +387,7 @@ function DrawReveal({ sweep, sweepId, entries, currentUid }) {
 
 // ─── Race Day (racing) ───────────────────────────────────────────────────────
 
-const POLL_INTERVAL_MS = 30_000;
+const POLL_INTERVAL_MS = 60_000;
 // Save results on Paying (stewards confirmed, dividends being paid) or Resulted (fully closed)
 // Interim is excluded — protests may still be active
 const RESULTED_STATUSES = new Set(['Resulted', 'Paying']);
@@ -564,7 +564,7 @@ function RaceDayView({ sweep, sweepId, entries, currentUid }) {
           <div>
             <strong>Waiting for race results...</strong>
             {pollStatus && <> Race status: <strong>{TAB_STATUS_LABEL[pollStatus] ?? pollStatus}</strong>.</>}
-            {' '}Polling TAB every 30 seconds.
+            {' '}Checking for results every minute.
             {autoResultError && <div style={{ color: 'var(--error)', marginTop: '4px' }}>{autoResultError}</div>}
           </div>
         </div>
@@ -675,13 +675,12 @@ function ResultsView({ sweep, sweepId, entries, currentUid }) {
   useEffect(() => {
     const resultsRef = collection(db, 'sweeps', sweepId, 'results');
     const q = query(resultsRef, orderBy('recordedAt', 'desc'));
-    const unsub = onSnapshot(q, (snap) => {
+    getDocs(q).then(snap => {
       if (!snap.empty) {
         setResults({ id: snap.docs[0].id, ...snap.docs[0].data() });
       }
       setLoading(false);
-    });
-    return () => unsub();
+    }).catch(() => setLoading(false));
   }, [sweepId]);
 
   if (loading) {
@@ -793,42 +792,45 @@ export default function SweepDetail() {
 
   const currentUid = getSessionId();
 
+  const pollRef = useRef(null);
+
+  const fetchSweepData = useCallback(async () => {
+    try {
+      const [sweepSnap, entriesSnap] = await Promise.all([
+        getDoc(doc(db, 'sweeps', sweepId)),
+        getDocs(collection(db, 'sweeps', sweepId, 'entries')),
+      ]);
+
+      if (!sweepSnap.exists()) {
+        setError('Sweep not found.');
+        setLoading(false);
+        return;
+      }
+
+      const sweepData = { id: sweepSnap.id, ...sweepSnap.data() };
+      setSweep(sweepData);
+
+      const list = entriesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      list.sort((a, b) => {
+        if (a.userId === sweepData.creatorId) return -1;
+        if (b.userId === sweepData.creatorId) return 1;
+        return (a.joinedAt?.seconds || 0) - (b.joinedAt?.seconds || 0);
+      });
+      setEntries(list);
+      setLoading(false);
+    } catch (err) {
+      console.error(err);
+      setError('Failed to load sweep.');
+      setLoading(false);
+    }
+  }, [sweepId]);
+
   useEffect(() => {
     if (!sweepId) return;
-
-    const sweepUnsub = onSnapshot(
-      doc(db, 'sweeps', sweepId),
-      (snap) => {
-        if (!snap.exists()) {
-          setError('Sweep not found.');
-          setLoading(false);
-          return;
-        }
-        setSweep({ id: snap.id, ...snap.data() });
-        setLoading(false);
-      },
-      (err) => {
-        console.error(err);
-        setError('Failed to load sweep.');
-        setLoading(false);
-      }
-    );
-
-    const entriesUnsub = onSnapshot(
-      collection(db, 'sweeps', sweepId, 'entries'),
-      (snap) => {
-        const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        list.sort((a, b) => {
-          if (a.userId === sweep?.creatorId) return -1;
-          if (b.userId === sweep?.creatorId) return 1;
-          return (a.joinedAt?.seconds || 0) - (b.joinedAt?.seconds || 0);
-        });
-        setEntries(list);
-      }
-    );
-
-    return () => { sweepUnsub(); entriesUnsub(); };
-  }, [sweepId]);
+    fetchSweepData();
+    pollRef.current = setInterval(fetchSweepData, 60_000);
+    return () => clearInterval(pollRef.current);
+  }, [sweepId, fetchSweepData]);
 
   // Fetch race start time once for TAB-linked sweeps that haven't completed yet
   useEffect(() => {
