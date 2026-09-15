@@ -51,6 +51,19 @@ listeners all getting the same update → massive read cost.
 **Fix:** Switch race-day view to polling (e.g. refresh every 30s) instead of realtime
 listeners, or use Firestore's built-in caching more aggressively.
 
+### 1b. TAB fan-out — browsers hit TAB directly (BIGGEST ONE)
+Every browser currently calls the TAB proxy itself for meetings and race detail.
+At 100k users that's 100k+ requests through a single proxy box, all pointed at
+TAB — which is the fastest way to get the proxy IP blocked on the one day it
+matters. Load scales with *users*, when it should scale with *races*.
+
+**Fix:** one scheduled job fetches race data every ~30s and writes it to
+Firestore (or a cache-headered endpoint the CDN fans out). Browsers read from
+there and never touch TAB. TAB then sees a few requests per race regardless of
+whether 10 or 100,000 people are watching. This is the change that makes
+free-tier infrastructure viable at all — without it, upgrading plans won't save
+race day.
+
 ### 2. Cron result-checker bottleneck
 Currently one cron function fetches TAB + saves results + sends all emails sequentially.
 With 1,000 active sweeps it will timeout.

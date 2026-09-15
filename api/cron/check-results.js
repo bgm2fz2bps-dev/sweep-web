@@ -1,7 +1,19 @@
 /**
- * Vercel Cron — runs every 5 minutes.
- * Checks all sweeps in 'racing' status, polls TAB for results,
+ * Result checker — checks all sweeps in 'racing' status, polls TAB for results,
  * saves them to Firestore, and emails participants.
+ *
+ * NOT scheduled by Vercel. Hobby plans only allow once-daily crons, and a
+ * five-minute expression makes the whole deployment fail validation — silently,
+ * the deploy never appears in the dashboard at all. So the `crons` block was
+ * removed from vercel.json and this endpoint is invoked externally instead,
+ * from the same Australian box that runs the TAB proxy, via a crontab line
+ * scheduled every five minutes:
+ *
+ *   curl -fsS -X POST \
+ *     -H "Authorization: Bearer $CRON_SECRET" \
+ *     https://sweep-web-nine.vercel.app/api/cron/check-results
+ *
+ * Set CRON_SECRET in the Vercel dashboard and match it on the caller.
  */
 
 import { initializeApp, cert, getApps } from 'firebase-admin/app';
