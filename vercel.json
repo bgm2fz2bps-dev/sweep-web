@@ -2,10 +2,7 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "functions": {
-    "api/tab/[...path].js": {
-      "regions": ["syd1"]
-    },
-    "api/[...path].js": {
+    "api/**/*.js": {
       "regions": ["syd1"]
     }
   },

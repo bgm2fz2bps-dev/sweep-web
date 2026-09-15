@@ -303,7 +303,10 @@ export default function CreateSweep() {
               </div>
             )}
 
-            {selectedRace && !racePickerOpen && (
+            {/* Always reachable once loading settles — this is the escape hatch
+                for exactly the case where TAB is unavailable, so gating it
+                behind a successful race selection defeats the purpose. */}
+            {!meetingsLoading && (
               <button
                 type="button"
                 onClick={switchToManual}
@@ -312,14 +315,17 @@ export default function CreateSweep() {
                   padding: '10px',
                   background: 'transparent',
                   border: '1px dashed var(--border)',
-                  color: 'var(--muted)',
+                  color: meetingsError ? 'var(--yellow)' : 'var(--muted)',
                   fontSize: '0.85rem',
                   cursor: 'pointer',
                   borderRadius: '4px',
                   marginTop: '12px',
+                  fontWeight: meetingsError ? 600 : 400,
                 }}
               >
-                Override with Manual Entry
+                {meetingsError
+                  ? 'Enter a race manually instead →'
+                  : 'Override with Manual Entry'}
               </button>
             )}
           </div>

@@ -1,6 +1,7 @@
 /**
- * TAB API wrapper — all calls go through the Vite proxy at /api/tab
- * which rewrites to https://api.beta.tab.com.au with spoofed iOS headers.
+ * TAB API wrapper — all calls go through /api/races, a CDN-cached server
+ * endpoint that talks to TAB via an Australian-IP proxy (TAB geo-blocks
+ * datacenter egress, including Vercel's).
  *
  * Race types: R = thoroughbred/gallops, H = harness, G = greyhound
  * Jurisdiction: QLD
@@ -11,15 +12,20 @@
  * inner array handles dead heats. results[0][0] is winner's runner number.
  */
 
-// In development: proxy runs at localhost:5175 via vite.config.js
-// In production: Vercel Edge Function at /api/tab proxies to api.beta.tab.com.au
-const BASE = (import.meta.env.VITE_PROXY_URL || '/api') + '/tab/v1/tab-info-service';
-const JURISDICTION = 'QLD';
+// All race data comes from /api/races — a CDN-cached server endpoint. The
+// browser never talks to TAB or the proxy tunnel directly, so TAB sees ~one
+// request per race per cache window no matter how many people are watching.
+// Changing the proxy is a server-side env var now, not a client rebuild.
+const RACES_ENDPOINT = '/api/races';
 
-async function tabFetch(path) {
-  const url = `${BASE}${path}${path.includes('?') ? '&' : '?'}jurisdiction=${JURISDICTION}`;
+async function racesFetch(params) {
+  const url = `${RACES_ENDPOINT}?${new URLSearchParams(params)}`;
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`TAB API error ${res.status}: ${url}`);
+  if (!res.ok) {
+    let detail = '';
+    try { detail = (await res.json()).detail || ''; } catch { /* non-JSON error body */ }
+    throw new Error(`Race data unavailable (${res.status})${detail ? `: ${detail}` : ''}`);
+  }
   return res.json();
 }
 
@@ -43,7 +49,7 @@ async function fetchMeetingsForDate(date) {
   const FINISHED = new Set(['Paying', 'Interim', 'Resulted', 'Abandoned', 'Closed']);
   const AU_STATES = new Set(['ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA']);
   const now = Date.now();
-  const data = await tabFetch(`/racing/dates/${date}/meetings`);
+  const data = await racesFetch({ date });
   const meetings = data.meetings || [];
   return meetings
     .filter(m => AU_STATES.has(m.location))
@@ -102,7 +108,7 @@ export async function fetchTodaysMeetings() {
  * results[][]: outer index = finish position (0-based), inner = runner numbers (dead heats)
  */
 export async function fetchRaceDetail(date, raceType, venueMnemonic, raceNumber) {
-  const data = await tabFetch(`/racing/dates/${date}/meetings/${raceType}/${venueMnemonic}/races/${raceNumber}`);
+  const data = await racesFetch({ date, type: raceType, venue: venueMnemonic, race: raceNumber });
   const race = data.race || data;
 
   const runners = (race.runners || [])
