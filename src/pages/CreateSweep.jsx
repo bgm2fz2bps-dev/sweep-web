@@ -282,7 +282,8 @@ export default function CreateSweep() {
                                   color: selectedRace?.raceNumber === race.raceNumber && selectedMeeting?.venueMnemonic === meeting.venueMnemonic ? '#000' : 'var(--text)',
                                 }}
                               >
-                                R{race.raceNumber} {race.raceName ? ` — ${race.raceName}` : ''} ({formatTime(race.raceTime)})
+                                R{race.raceNumber}{race.raceName ? ` — ${race.raceName}` : ''}
+                                {race.raceStartTime ? ` (${formatTime(race.raceStartTime)})` : ''}
                               </button>
                             ))}
                           </div>
