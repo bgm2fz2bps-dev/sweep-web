@@ -6,9 +6,12 @@
 
 import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { tabBase } from '../_tunnel.js';
 
 const RESULTED_STATUSES = new Set(['Resulted', 'Paying']);
-const TAB_BASE = 'https://api.beta.tab.com.au/v1/tab-info-service';
+// TAB blocks Vercel's datacenter egress, so results must be fetched through the
+// same Australian-IP proxy tunnel the frontend uses — not api.beta.tab.com.au direct.
+const TAB_BASE = tabBase();
 const JURISDICTION = 'QLD';
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const APP_URL = process.env.VITE_APP_URL || 'https://sweep-web-nine.vercel.app';
