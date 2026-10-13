@@ -32,6 +32,12 @@
   --shadow-card: 0 4px 24px rgba(0,0,0,0.4);
   --shadow-glow: 0 0 20px var(--yellow-glow);
   --transition: 0.2s ease;
+  /* aliases used by CreateSweep / SweepDetail inline styles */
+  --border: var(--navy-border);
+  --surface: var(--navy-card);
+  --surface-alt: var(--navy-light);
+  --text: var(--off-white);
+  --error: var(--danger);
 }
 
 html {
@@ -269,7 +275,7 @@ a:hover { opacity: 0.8; }
   text-transform: uppercase;
 }
 
-.input {
+.input, .form-input {
   background: var(--navy-light);
   border: 1.5px solid var(--navy-border);
   border-radius: var(--radius-md);
@@ -282,11 +288,11 @@ a:hover { opacity: 0.8; }
   outline: none;
 }
 
-.input::placeholder {
+.input::placeholder, .form-input::placeholder {
   color: var(--muted);
 }
 
-.input:focus {
+.input:focus, .form-input:focus {
   border-color: var(--yellow);
   box-shadow: 0 0 0 3px var(--yellow-glow);
 }
