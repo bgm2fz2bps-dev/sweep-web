@@ -9,7 +9,7 @@
     }
   },
   "rewrites": [
-    { "source": "/((?!api/|assets/).*)", "destination": "/app.html" }
+    { "source": "/((?!api/|assets/).*)", "destination": "/app" }
   ],
   "headers": [
     {
