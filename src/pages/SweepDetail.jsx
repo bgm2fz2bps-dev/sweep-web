@@ -2,12 +2,13 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   doc, getDoc, collection, updateDoc, writeBatch,
-  getDocs, addDoc, serverTimestamp, query, orderBy, arrayUnion
+  getDocs, setDoc, serverTimestamp, query, orderBy, arrayUnion
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { getSessionId } from '../identity';
-import { MELBOURNE_CUP_HORSES } from '../data/horses';
-import { fetchRaceDetail, getFinisherRunnerNumber, runnerByNumber } from '../tabApi';
+import {
+  getFinisherRunnerNumber, runnerByNumber, isTabLinked, fetchSweepRace, numberedHorses, CUP,
+} from '../tabApi';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -36,9 +37,106 @@ function StatusBadge({ status }) {
   return <span className={`status-badge ${s.cls}`}>{s.label}</span>;
 }
 
-/** Returns true if the sweep has TAB fields set. */
+/** True if the sweep follows a live TAB race (a picked race, or the Cup preset). */
 function hasTAB(sweep) {
-  return !!(sweep?.tabVenueMnemonic && sweep?.tabRaceNumber && sweep?.tabDate && sweep?.tabRaceType);
+  return isTabLinked(sweep);
+}
+
+/**
+ * Live TAB field for a linked sweep — names, barriers, scratchings by runner
+ * number. Null until TAB publishes the race (a Cup sweep before 31 Oct).
+ * Served from the CDN-cached /api/races, so polling here is cheap for TAB.
+ */
+function useLiveField(sweep) {
+  const [detail, setDetail] = useState(null);
+  const linked = isTabLinked(sweep);
+  const live = linked && sweep?.status !== 'completed';
+  const sweepKey = sweep?.id;
+  useEffect(() => {
+    if (!linked) return;
+    let cancelled = false;
+    const load = () => fetchSweepRace(sweep)
+      .then(d => { if (!cancelled && d) setDetail(d); })
+      .catch(() => { /* keep last good field */ });
+    load();
+    const id = live ? setInterval(load, 120_000) : null;
+    return () => { cancelled = true; if (id) clearInterval(id); };
+  }, [linked, live, sweepKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  return detail;
+}
+
+function liveRunner(detail, runnerNumber) {
+  return detail?.field?.find(r => r.runnerNumber === runnerNumber) || null;
+}
+
+/** Best current label for an entry's horse — live TAB name once the field is out. */
+function horseLabel(entry, detail) {
+  const r = liveRunner(detail, entry.horseId);
+  if (r) return `${r.runnerNumber}. ${r.runnerName}${r.barrierNumber ? ` (B${r.barrierNumber})` : ''}`;
+  return entry.horseName;
+}
+
+/** Scratched, or a number that isn't in the final field at all. */
+function isScratched(entry, detail) {
+  if (!detail?.field?.length || entry.horseId == null) return false;
+  const r = liveRunner(detail, entry.horseId);
+  return !r || r.scratched;
+}
+
+function ScratchingsPanel({ sweepId, entries, detail, isCreator }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const scratched = entries.filter(e => isScratched(e, detail));
+  if (scratched.length === 0) return null;
+
+  const held = new Set(entries.filter(e => !isScratched(e, detail)).map(e => e.horseId));
+  const spare = (detail?.runners || []).filter(r => !held.has(r.runnerNumber));
+
+  const redraw = async () => {
+    setBusy(true);
+    setMsg('');
+    try {
+      const pool = fisherYates(spare);
+      const batch = writeBatch(db);
+      scratched.forEach((entry, i) => {
+        const r = pool[i];
+        if (!r) return;
+        batch.update(doc(db, 'sweeps', sweepId, 'entries', entry.id), {
+          horseId: r.runnerNumber,
+          horseName: `${r.runnerNumber}. ${r.runnerName}${r.barrierNumber ? ` (B${r.barrierNumber})` : ''}`,
+          redrawnFrom: entry.horseId,
+        });
+      });
+      await batch.commit();
+      setMsg(pool.length < scratched.length
+        ? `Re-drew ${pool.length}. No spare horses left for the rest — refund them or let them share.`
+        : 'Re-drawn! Refresh in a moment to see the new horses.');
+    } catch (err) {
+      console.error('Redraw failed:', err);
+      setMsg('Re-draw failed. Give it another crack.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="alert alert-error" style={{ marginBottom: '20px', fontSize: '0.88rem' }}>
+      <strong>🚫 Scratched:</strong>{' '}
+      {scratched.map(e => `No. ${e.horseId} (${e.displayName})`).join(', ')}
+      <div style={{ marginTop: '8px', color: 'var(--muted-light)' }}>
+        {spare.length > 0
+          ? `${spare.length} horse${spare.length !== 1 ? 's are' : ' is'} still unallocated.`
+          : 'Every remaining horse is already taken — the usual rule is a refund for scratched entrants.'}
+        {!isCreator && spare.length > 0 && ' The host can re-draw scratched entrants onto them.'}
+      </div>
+      {isCreator && spare.length > 0 && (
+        <button className="btn btn-primary btn-sm" style={{ marginTop: '10px' }} onClick={redraw} disabled={busy}>
+          {busy ? 'Re-drawing…' : `🎲 Re-draw scratched entrants (${Math.min(spare.length, scratched.length)})`}
+        </button>
+      )}
+      {msg && <div style={{ marginTop: '8px' }}>{msg}</div>}
+    </div>
+  );
 }
 
 function Countdown({ targetIso }) {
@@ -106,7 +204,7 @@ function LobbyView({ sweep, sweepId, entries, currentUid }) {
         setJoinError(`You can only claim up to ${maxPerPerson} spot${maxPerPerson !== 1 ? 's' : ''}.`);
         return;
       }
-      const displayName = localStorage.getItem('sweepDisplayName') || 'Anonymous';
+      const displayName = (localStorage.getItem('sweepDisplayName') || 'Anonymous').slice(0, 40);
       const entryData = {
         userId: currentUid,
         displayName,
@@ -114,12 +212,21 @@ function LobbyView({ sweep, sweepId, entries, currentUid }) {
         horseName: null,
         joinedAt: serverTimestamp(),
       };
-      const emailTrimmed = joinEmail.trim().toLowerCase();
-      if (emailTrimmed) entryData.email = emailTrimmed;
-      await addDoc(collection(db, 'sweeps', sweepId, 'entries'), entryData);
-      await updateDoc(doc(db, 'sweeps', sweepId), {
-        participantIds: arrayUnion(currentUid),
-      });
+      const emailTrimmed = joinEmail.trim().toLowerCase().slice(0, 254);
+      if (emailTrimmed && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailTrimmed)) {
+        setJoinError("That email doesn't look right — fix it or leave it blank.");
+        return;
+      }
+      // Emails go in a private subcollection that no browser can read back —
+      // only the result-checker (admin SDK) uses them.
+      const entryRef = doc(collection(db, 'sweeps', sweepId, 'entries'));
+      const batch = writeBatch(db);
+      batch.set(entryRef, entryData);
+      if (emailTrimmed) {
+        batch.set(doc(db, 'sweeps', sweepId, 'private', entryRef.id), { userId: currentUid, email: emailTrimmed });
+      }
+      batch.update(doc(db, 'sweeps', sweepId), { participantIds: arrayUnion(currentUid) });
+      await batch.commit();
     } catch (err) {
       console.error('Join failed:', err);
       setJoinError('Something went wrong. Give it another crack.');
@@ -146,19 +253,22 @@ function LobbyView({ sweep, sweepId, entries, currentUid }) {
       let horseList;
 
       if (hasTAB(sweep)) {
-        // Fetch live runner list from TAB
-        const detail = await fetchRaceDetail(
-          sweep.tabDate,
-          sweep.tabRaceType,
-          sweep.tabVenueMnemonic,
-          sweep.tabRaceNumber
-        );
-        horseList = detail.runners.map(r => ({
-          id: r.runnerNumber,
-          name: `${r.runnerNumber}. ${r.runnerName}${r.barrierNumber ? ` (B${r.barrierNumber})` : ''}`,
-        }));
+        // Live runner list from TAB (scratchings already excluded)
+        const detail = await fetchSweepRace(sweep);
+        if (detail?.runners?.length) {
+          horseList = detail.runners.map(r => ({
+            id: r.runnerNumber,
+            name: `${r.runnerNumber}. ${r.runnerName}${r.barrierNumber ? ` (B${r.barrierNumber})` : ''}`,
+          }));
+        } else if (sweep.cup) {
+          // Field not published yet: draw saddlecloth numbers. Names, barriers
+          // and scratchings attach to the numbers once TAB has the field.
+          horseList = numberedHorses(CUP.fieldSize);
+        } else {
+          throw new Error('TAB returned no runners');
+        }
       } else {
-        horseList = MELBOURNE_CUP_HORSES;
+        horseList = numberedHorses(sweep.maxEntries || 24);
       }
 
       const shuffled = fisherYates(horseList);
@@ -214,7 +324,12 @@ function LobbyView({ sweep, sweepId, entries, currentUid }) {
               <span style={{ color: 'var(--white)', fontWeight: 700 }}>max {sweep.maxEntriesPerPerson}</span>
             </div>
           )}
-          {hasTAB(sweep) && (
+          {sweep.cup ? (
+            <div style={{ fontSize: '0.8rem' }}>
+              <span style={{ color: 'var(--yellow)', fontWeight: 600 }}>🏆 Live Cup field</span>
+              <span style={{ color: 'var(--muted)' }}> — names, barriers &amp; scratchings fill in once the field is out (Sat 31 Oct)</span>
+            </div>
+          ) : hasTAB(sweep) && (
             <div style={{ fontSize: '0.8rem' }}>
               <span style={{ color: 'var(--yellow)', fontWeight: 600 }}>🏇 TAB Linked</span>
               <span style={{ color: 'var(--muted)' }}> — {sweep.tabMeetingName} R{sweep.tabRaceNumber}</span>
@@ -282,7 +397,7 @@ function LobbyView({ sweep, sweepId, entries, currentUid }) {
               disabled={drawLoading}
             >
               {drawLoading
-                ? (hasTAB(sweep) ? 'Fetching runners from TAB...' : 'Running the draw...')
+                ? (sweep.tabVenueMnemonic ? 'Fetching runners from TAB...' : 'Running the draw...')
                 : `🎲 Start the Draw (${entries.length} entries)`}
             </button>
           )}
@@ -321,7 +436,7 @@ function LobbyView({ sweep, sweepId, entries, currentUid }) {
 
 // ─── Draw Reveal (drawn) ─────────────────────────────────────────────────────
 
-function DrawReveal({ sweep, sweepId, entries, currentUid }) {
+function DrawReveal({ sweep, sweepId, entries, currentUid, detail }) {
   const [advancing, setAdvancing] = useState(false);
 
   const isCreator = currentUid === sweep.creatorId;
@@ -343,7 +458,14 @@ function DrawReveal({ sweep, sweepId, entries, currentUid }) {
         <span style={{ fontSize: '3rem', display: 'block', marginBottom: '12px' }}>🎲</span>
         <h2>{sweep.name}</h2>
         <p style={{ color: 'var(--muted-light)', marginTop: '6px' }}>The horses have been drawn! Here&apos;s who got what.</p>
+        {sweep.cup && !detail && (
+          <p style={{ color: 'var(--muted)', fontSize: '0.82rem', marginTop: '6px' }}>
+            Horse names appear here automatically once the final field is announced (Sat 31 Oct).
+          </p>
+        )}
       </div>
+
+      <ScratchingsPanel sweepId={sweepId} entries={entries} detail={detail} isCreator={isCreator} />
 
       <div className="entry-list" style={{ marginBottom: '32px' }}>
         {entries.map((entry, i) => (
@@ -357,7 +479,8 @@ function DrawReveal({ sweep, sweepId, entries, currentUid }) {
               <div className="entry-name">{entry.displayName}</div>
               {entry.horseName && (
                 <div style={{ fontSize: '0.8rem', color: entry.userId === currentUid ? 'var(--yellow)' : 'var(--muted-light)', fontWeight: 600, marginTop: '2px' }}>
-                  🐴 {entry.horseName}
+                  🐴 {horseLabel(entry, detail)}
+                  {isScratched(entry, detail) && <span style={{ color: 'var(--danger)', marginLeft: '6px' }}>SCRATCHED</span>}
                 </div>
               )}
             </div>
@@ -402,7 +525,7 @@ const TAB_STATUS_LABEL = {
   Abandoned: 'Abandoned',
 };
 
-function RaceDayView({ sweep, sweepId, entries, currentUid }) {
+function RaceDayView({ sweep, sweepId, entries, currentUid, detail }) {
   const [showResultsForm, setShowResultsForm] = useState(false);
   const [first, setFirst] = useState('');
   const [second, setSecond] = useState('');
@@ -413,7 +536,7 @@ function RaceDayView({ sweep, sweepId, entries, currentUid }) {
   // TAB auto-results polling
   const [pollStatus, setPollStatus] = useState('');   // human-readable status string
   const [autoResultError, setAutoResultError] = useState('');
-  const [raceStartTime, setRaceStartTime] = useState(null);
+  const [raceStartTime, setRaceStartTime] = useState(sweep.cup ? CUP.startIso : null);
   const pollTimerRef = useRef(null);
   const isSavingRef = useRef(false);
 
@@ -424,11 +547,11 @@ function RaceDayView({ sweep, sweepId, entries, currentUid }) {
   // For TAB sweeps the horse names are stored on entries (e.g. "1. Thunder (B3)")
   const allHorses = entries
     .filter(e => e.horseId != null)
-    .map(e => ({ id: e.horseId, name: e.horseName }))
+    .map(e => ({ id: e.horseId, name: horseLabel(e, detail) }))
     .sort((a, b) => a.id - b.id);
 
-  // Fallback to MELBOURNE_CUP_HORSES for non-TAB sweeps
-  const horseListForForm = tabEnabled ? allHorses : MELBOURNE_CUP_HORSES;
+  const manualHorses = numberedHorses(sweep.maxEntries || 24);
+  const horseListForForm = tabEnabled ? allHorses : manualHorses;
 
   const saveAutoResults = async (raceDetail) => {
     if (isSavingRef.current) return;
@@ -450,7 +573,7 @@ function RaceDayView({ sweep, sweepId, entries, currentUid }) {
       const secondEntry = secondNum != null ? entryByHorseId[secondNum] : null;
       const thirdEntry = thirdNum != null ? entryByHorseId[thirdNum] : null;
 
-      await addDoc(collection(db, 'sweeps', sweepId, 'results'), {
+      await setDoc(doc(db, 'sweeps', sweepId, 'results', 'final'), {
         firstHorseId: winnerNum ?? null,
         firstHorseName: winnerRunner ? `${winnerRunner.runnerNumber}. ${winnerRunner.runnerName}` : (winnerNum ? String(winnerNum) : null),
         secondHorseId: secondNum ?? null,
@@ -463,6 +586,12 @@ function RaceDayView({ sweep, sweepId, entries, currentUid }) {
 
       await updateDoc(doc(db, 'sweeps', sweepId), { status: 'completed' });
     } catch (err) {
+      // permission-denied here usually means another viewer (or the server
+      // checker) recorded the result first — the next refresh picks it up.
+      if (err?.code === 'permission-denied') {
+        const existing = await getDoc(doc(db, 'sweeps', sweepId, 'results', 'final')).catch(() => null);
+        if (existing?.exists()) return;
+      }
       console.error('Auto-save results failed:', err);
       setAutoResultError('Auto-save failed. Enter results manually below.');
       isSavingRef.current = false;
@@ -472,19 +601,15 @@ function RaceDayView({ sweep, sweepId, entries, currentUid }) {
   const poll = useCallback(async () => {
     if (!tabEnabled || isSavingRef.current) return;
     try {
-      const detail = await fetchRaceDetail(
-        sweep.tabDate,
-        sweep.tabRaceType,
-        sweep.tabVenueMnemonic,
-        sweep.tabRaceNumber
-      );
-      setPollStatus(detail.raceStatus || 'Unknown');
-      if (detail.raceStartTime && !raceStartTime) setRaceStartTime(detail.raceStartTime);
+      const race = await fetchSweepRace(sweep);
+      if (!race) { setPollStatus('Field not published yet'); return; }
+      setPollStatus(race.raceStatus || 'Unknown');
+      if (race.raceStartTime) setRaceStartTime(race.raceStartTime);
 
-      if (RESULTED_STATUSES.has(detail.raceStatus)) {
+      if (RESULTED_STATUSES.has(race.raceStatus)) {
         // Race is done — save results and transition
         clearInterval(pollTimerRef.current);
-        await saveAutoResults(detail);
+        await saveAutoResults(race);
       }
     } catch (err) {
       console.error('Poll error:', err);
@@ -510,9 +635,9 @@ function RaceDayView({ sweep, sweepId, entries, currentUid }) {
   const displayHorses = tabEnabled
     ? entries
         .filter(e => e.horseId != null)
-        .map(e => ({ id: e.horseId, name: e.horseName, entry: e }))
+        .map(e => ({ id: e.horseId, name: horseLabel(e, detail), entry: e, scratched: isScratched(e, detail) }))
         .sort((a, b) => a.id - b.id)
-    : MELBOURNE_CUP_HORSES.map(horse => ({
+    : manualHorses.map(horse => ({
         ...horse,
         entry: horseToEntry[horse.id] || null,
       }));
@@ -528,7 +653,7 @@ function RaceDayView({ sweep, sweepId, entries, currentUid }) {
       const secondHorse = horseListForForm.find(h => h.name === second);
       const thirdHorse = horseListForForm.find(h => h.name === third);
 
-      await addDoc(collection(db, 'sweeps', sweepId, 'results'), {
+      await setDoc(doc(db, 'sweeps', sweepId, 'results', 'final'), {
         firstHorseId: firstHorse?.id || null,
         firstHorseName: first,
         secondHorseId: secondHorse?.id || null,
@@ -557,6 +682,8 @@ function RaceDayView({ sweep, sweepId, entries, currentUid }) {
         <p style={{ color: 'var(--muted-light)', marginTop: '4px' }}>{sweep.race} — Race Day!</p>
       </div>
 
+      <ScratchingsPanel sweepId={sweepId} entries={entries} detail={detail} isCreator={isCreator} />
+
       {/* TAB polling status */}
       {tabEnabled && (
         <div className="alert alert-info" style={{ marginBottom: '20px', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -574,8 +701,11 @@ function RaceDayView({ sweep, sweepId, entries, currentUid }) {
         <div className="card card-highlighted" style={{ marginBottom: '20px', textAlign: 'center' }}>
           <p style={{ color: 'var(--muted-light)', fontSize: '0.85rem', marginBottom: '4px' }}>Your horse</p>
           <div style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--yellow)' }}>
-            🐴 {myEntry.horseName}
+            🐴 {horseLabel(myEntry, detail)}
           </div>
+          {isScratched(myEntry, detail) && (
+            <p style={{ color: 'var(--danger)', fontWeight: 700, marginTop: '4px' }}>Scratched — check with your host</p>
+          )}
           <p style={{ color: 'var(--muted)', fontSize: '0.8rem', marginTop: '4px' }}>
             {tabEnabled ? `Runner #${myEntry.horseId}` : `Horse #${myEntry.horseId}`}
           </p>
@@ -595,7 +725,8 @@ function RaceDayView({ sweep, sweepId, entries, currentUid }) {
               style={{ opacity: hasOwner ? 1 : 0.45 }}
             >
               <div className="horse-number">#{horse.id}</div>
-              <div className="horse-name">{horse.name}</div>
+              <div className="horse-name" style={horse.scratched ? { textDecoration: 'line-through' } : undefined}>{horse.name}</div>
+              {horse.scratched && <div style={{ fontSize: '0.7rem', color: 'var(--danger)', fontWeight: 700 }}>SCRATCHED</div>}
               {entry ? (
                 <div className={`horse-owner ${isMe ? 'mine' : ''}`}>
                   {isMe ? '⭐ ' : ''}{entry.displayName}
@@ -668,7 +799,7 @@ function RaceDayView({ sweep, sweepId, entries, currentUid }) {
 
 // ─── Results (completed) ─────────────────────────────────────────────────────
 
-function ResultsView({ sweep, sweepId, entries, currentUid }) {
+function ResultsView({ sweep, sweepId, entries, currentUid, detail }) {
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -768,7 +899,7 @@ function ResultsView({ sweep, sweepId, entries, currentUid }) {
               <div className="entry-name">{entry.displayName}</div>
               {entry.horseName && (
                 <div style={{ fontSize: '0.8rem', color: 'var(--muted-light)', marginTop: '2px' }}>
-                  🐴 {entry.horseName}
+                  🐴 {horseLabel(entry, detail)}
                 </div>
               )}
             </div>
@@ -788,8 +919,6 @@ export default function SweepDetail() {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [raceStartTime, setRaceStartTime] = useState(null);
-
   const currentUid = getSessionId();
 
   const pollRef = useRef(null);
@@ -832,13 +961,8 @@ export default function SweepDetail() {
     return () => clearInterval(pollRef.current);
   }, [sweepId, fetchSweepData]);
 
-  // Fetch race start time once for TAB-linked sweeps that haven't completed yet
-  useEffect(() => {
-    if (!sweep || !hasTAB(sweep) || sweep.status === 'completed' || raceStartTime) return;
-    fetchRaceDetail(sweep.tabDate, sweep.tabRaceType, sweep.tabVenueMnemonic, sweep.tabRaceNumber)
-      .then(detail => { if (detail.raceStartTime) setRaceStartTime(detail.raceStartTime); })
-      .catch(() => {});
-  }, [sweep?.id]);
+  const liveDetail = useLiveField(sweep);
+  const raceStartTime = liveDetail?.raceStartTime || (sweep?.cup ? CUP.startIso : null);
 
   if (loading) {
     return (
@@ -866,8 +990,8 @@ export default function SweepDetail() {
   return (
     <div className="page">
       <div style={{ marginBottom: '20px' }}>
-        <Link to="/" style={{ color: 'var(--muted)', fontSize: '0.875rem', textDecoration: 'none' }}>
-          ← Home
+        <Link to="/my-sweeps" style={{ color: 'var(--muted)', fontSize: '0.875rem', textDecoration: 'none' }}>
+          ← My sweeps
         </Link>
       </div>
 
@@ -890,6 +1014,7 @@ export default function SweepDetail() {
           sweepId={sweepId}
           entries={entries}
           currentUid={currentUid}
+          detail={liveDetail}
         />
       )}
 
@@ -899,6 +1024,7 @@ export default function SweepDetail() {
           sweepId={sweepId}
           entries={entries}
           currentUid={currentUid}
+          detail={liveDetail}
         />
       )}
 
@@ -908,6 +1034,7 @@ export default function SweepDetail() {
           sweepId={sweepId}
           entries={entries}
           currentUid={currentUid}
+          detail={liveDetail}
         />
       )}
     </div>

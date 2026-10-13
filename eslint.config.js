@@ -23,7 +23,12 @@ export default defineConfig([
       },
     },
     rules: {
-      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]', caughtErrors: 'none' }],
     },
+  },
+  {
+    // Server-side code: Vercel functions, the proxy, build scripts, tests
+    files: ['api/**/*.js', 'proxy-server.js', 'scripts/**/*.{js,mjs}', 'site/**/*.mjs', 'tests/**/*.mjs', 'vite.config.js'],
+    languageOptions: { globals: globals.node },
   },
 ])

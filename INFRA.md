@@ -1,111 +1,91 @@
-# Infrastructure Setup
+# Infrastructure & launch runbook
 
-What has to exist outside the repo for Sweep to run, and why.
-
----
-
-## Why there's a proxy at all
-
-TAB geo-blocks datacenter egress. Requests from Vercel — including its Sydney
-`syd1` region — get an HTML interstitial rather than JSON. Confirmed by testing
-`/api/tab/proxy` against a live deploy. So every TAB call must exit from an
-Australian IP that isn't a known cloud range.
-
-Right now that's a Cloudflare quick tunnel to `proxy-server.js` on George's Mac.
-That's fine for testing and unacceptable for launch: the URL changes on every
-restart, the machine sleeps, and there's no redundancy.
+Everything that has to exist outside the repo for Sweep to run, in the order to do it.
 
 ---
 
-## 1. Move the proxy to a Sydney box
+## 0. Security — do these first
 
-Any always-on host with an Australian IP works. Options, cheapest first:
+| # | Step | Command / where |
+|---|------|-----------------|
+| 1 | **Deploy Firestore rules.** Until this is done, the whole database (every sweep and every participant's email) is publicly readable and probably writable. | `npm run deploy:rules` (logs in to Firebase on first run). Optional first: `npm run test:rules` (needs Java). |
+| 2 | **Enable Anonymous sign-in** if it isn't already. The rules require it. | Firebase console → Authentication → Sign-in method → Anonymous → Enable |
+| 3 | **Set `CRON_SECRET`** (32+ random characters). The result checker refuses to run without it. | Vercel → Settings → Environment Variables. Generate with `openssl rand -hex 32` |
+| 4 | **Run the one-off migration.** It moves old participant emails off the public entry docs and registers join codes for older sweeps. | `curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" https://sweep-web-nine.vercel.app/api/cron/migrate` and then delete `api/cron/migrate.js` |
+| 5 | **Rotate the GitHub token** embedded in the local git remote URL (`git remote -v` shows it). | GitHub → Settings → Developer settings → revoke it. Then `gh auth login` and `git remote set-url origin https://github.com/bgm2fz2bps-dev/sweep-web.git` |
 
-| Option | Cost | Notes |
-|---|---|---|
-| Oracle Cloud Always Free (ap-sydney-1) | $0 | Free ARM tier halved to 2 OCPU/12GB in June 2026; Sydney capacity is often unavailable. Try first, don't count on it. |
-| Vultr / DigitalOcean / Binary Lane Sydney | ~$5–6/mo | Reliable. Budget this as the realistic answer. |
+Order matters for 1 and the code deploy: **deploy the new code first, then the rules.** The new client is compatible with the old (open) rules, but the old client isn't compatible with the new rules.
 
-### Setup on the box
+Note: sweeps created before this change used a different identity scheme, so their hosts lose host controls (draw, race day). Fine for test sweeps; real users start fresh.
+
+---
+
+## 1. Sydney proxy box (replaces the laptop tunnel)
+
+TAB geo-blocks datacenter egress, including Vercel `syd1`, so every TAB call exits through `proxy-server.js` on an Australian IP. Right now that's a Cloudflare quick tunnel to the Mac: the URL changes on restart, it dies when the Mac sleeps, and there's no redundancy.
+
+**Host:** any Sydney VPS, about $6/month (Vultr, DigitalOcean, Binary Lane). Ubuntu 24.04, smallest size. Oracle Always Free (ap-sydney-1) costs $0 if capacity is available.
 
 ```bash
-git clone https://github.com/bgm2fz2bps-dev/sweep-web.git
-cd sweep-web && npm install
-node proxy-server.js          # listens on :5175, /health for uptime checks
+scp proxy-server.js scripts/proxy-box/setup.sh root@<box-ip>:/root/
+ssh root@<box-ip> 'bash /root/setup.sh'
 ```
 
-Keep it alive with systemd or pm2. Put it behind a domain with TLS (Caddy makes
-this one line) so you get a stable `https://` URL.
-
-### Point Vercel at it
-
-Set in the Vercel dashboard → Settings → Environment Variables:
+The script installs Node and Caddy (automatic HTTPS; with no domain it uses `<ip>.sslip.io`). It runs the proxy as a locked-down systemd service, firewalls everything except 22/80/443, and installs the five-minute result-checker cron. At the end it prints two values to paste into Vercel:
 
 ```
-TAB_PROXY_URL = https://your-proxy-domain
+TAB_PROXY_URL=https://…
+PROXY_TOKEN=…            # proxy rejects requests without it
 ```
 
-`api/_tunnel.js` prefers this over the baked-in tunnel constant, and it's read at
-**runtime** — so changing the proxy needs no rebuild and no redeploy.
+Both are read at **runtime**, so changing them needs a redeploy but no code change. Once the box is verified:
+- stop the laptop tunnel (`scripts/start-proxy.sh`) and its launch agent
+- delete `scripts/start-proxy.sh` and `api/_tunnel-url.js`, and remove the fallback import in `api/_tunnel.js`
 
-Once this is set and verified, delete `scripts/start-proxy.sh`, `api/_tunnel.js`'s
-hardcoded constant, and the `VITE_PROXY_URL` line in `.env.production`. They only
-exist to support the laptop tunnel.
-
-### Move the result-checker cron here too
-
-Vercel Hobby only permits once-daily crons, and a more frequent expression makes
-the **entire deployment fail validation silently** — no build appears in the
-dashboard at all. That cost this project five months of undeployed commits
-(Apr 5 → Sep 15). The `crons` block is therefore gone from `vercel.json`.
-
-Run it from this box's crontab every five minutes instead:
-
-```
-*/5 * * * * curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" https://sweep-web-nine.vercel.app/api/cron/check-results
-```
-
-Set `CRON_SECRET` in Vercel env vars and match it here.
+**Proxy hardening (in `proxy-server.js`):** a path allowlist (only the two racing endpoints), the `X-Proxy-Token` check, no CORS, cookies stripped, redirects restricted to TAB's host, and a global rate cap (`PROXY_MAX_PER_MINUTE`, default 600) so a bug can't get the IP banned.
 
 ---
 
-## 2. Firestore → Blaze
+## 2. Firestore → Blaze, with a budget alert
 
-Do this before any public sharing. Spark's 50k reads/day is a hard cliff that
-race-day traffic clears in minutes; Blaze is pay-as-you-go (~$0.06/100k reads),
-so it costs approximately nothing at current volume but removes the ceiling.
+Spark's 50k reads/day runs out in minutes on race day. Blaze is pay-as-you-go (about US$0.06 per 100k reads). Firebase console → Usage and billing → Modify plan → Blaze. **Set a budget alert**, because Blaze has no automatic spend cap.
 
-Firebase Console → Usage and billing → Modify plan → Blaze.
+## 3. Vercel plan
 
-**Set a budget alert** while you're there. Blaze has no automatic spend cap, and
-an unexpected read pattern can run up a bill.
+The site is free and ad-free, so Hobby's non-commercial rule is fine. Hobby limits that matter on race day: 1M function invocations per month, 100 GB transfer, and 10s function duration. `/api/races` is CDN-cached, so function invocations scale with races, not users. Consider Pro for Cup week anyway.
 
----
+## 4. Domain & SEO
 
-## 3. Caching (done — how it works)
-
-`api/races.js` is the only thing that talks to the proxy. Browsers call it and
-never touch TAB directly. Responses carry `s-maxage`, so Vercel's CDN absorbs the
-fan-out: TAB sees roughly one request per race per cache window whether 10 or
-100,000 people are watching.
-
-- Meetings: `s-maxage=300`, stale-while-revalidate 900
-- Race detail: `s-maxage=20`, stale-while-revalidate 60
-- Errors are sent `no-store` so a blip can't poison the cache
-
-Note that Vercel does **not** deploy `api/**/[...path].js` catch-all routes on
-this project — verified against live deploys, they 404 while named functions like
-`/api/debug` and `/api/races` work. Add new endpoints as named files.
+- Canonical URLs, the sitemap and OG tags use `SITE_URL`, falling back to Vercel's production domain. **Adding a custom domain in Vercel updates them on the next build automatically.** Then set the `.vercel.app` URL to redirect to the new domain (Vercel → Domains).
+- **Google Search Console:** add the site (domain property), submit `/sitemap.xml`, and request indexing for the five pages. Do this as early as possible.
+- The static pages are written in `site/pages.mjs` and rendered by `scripts/build-pages.mjs` at build. Update `UPDATED` when you edit the content.
 
 ---
 
-## Pre-launch checklist
+## How the pieces fit
 
-- [ ] Proxy on a Sydney box with a stable domain
-- [ ] `TAB_PROXY_URL` set in Vercel
-- [ ] `CRON_SECRET` set in Vercel and in the box's crontab
-- [ ] Result-checker cron running every 5 min from the box
-- [ ] Firestore on Blaze, with a budget alert
-- [ ] Decide emails vs web push (Resend free is 100/day — nowhere near enough;
-      see SCALING.md)
-- [ ] Load-test the race-day view and check Firestore read counts per page load
+```
+browser ──► Vercel CDN ──► static pages (/, /melbourne-cup-sweep-*, …)
+        │               └► app.html (SPA: /create, /sweep/:id, /join/:code, /my-sweeps)
+        ├──► /api/races (CDN-cached: 20s race, 5 min meetings) ──► Sydney proxy ──► TAB
+        └──► Firestore (anonymous auth + firestore.rules)
+
+Sydney box cron (5 min) ──► /api/cron/check-results ──► proxy ──► TAB
+                                                  └──► Firestore (admin) + Resend emails
+```
+
+### Environment variables (Vercel)
+
+| Name | Purpose |
+|---|---|
+| `TAB_PROXY_URL` | Sydney proxy origin |
+| `PROXY_TOKEN` | shared secret with the proxy |
+| `CRON_SECRET` | protects `/api/cron/*` (required) |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | admin access for the cron |
+| `RESEND_API_KEY` | result emails (optional) |
+| `SITE_URL` | canonical origin override (optional) |
+
+### Gotchas learned the hard way
+- Vercel Hobby rejects crons more frequent than daily, and the rejection is **silent**: no deployment appears at all. This cost five months of undeployed commits (Apr → Sep 2026). Keep `crons` out of `vercel.json`.
+- Vercel doesn't deploy `api/**/[...path].js` catch-all routes on this project. Add endpoints as named files.
+- TAB returns an HTML interstitial with status **200** when it geo-blocks you. `api/races.js` checks that the body is JSON.

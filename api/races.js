@@ -17,7 +17,7 @@
  *     → full race detail incl. runners and results
  */
 
-import { tabBase } from './_tunnel.js';
+import { tabBase, proxyHeaders } from './_tunnel.js';
 
 const JURISDICTION = 'QLD';
 
@@ -27,14 +27,7 @@ const RACE_CACHE = 'public, s-maxage=20, stale-while-revalidate=60';
 
 async function tabFetch(path) {
   const url = `${tabBase()}${path}${path.includes('?') ? '&' : '?'}jurisdiction=${JURISDICTION}`;
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
-      'Accept': 'application/json, text/plain, */*',
-      'Origin': 'https://www.tab.com.au',
-      'Referer': 'https://www.tab.com.au/',
-    },
-  });
+  const res = await fetch(url, { headers: proxyHeaders(), signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error(`TAB ${res.status} for ${path}`);
 
   // A geo-block or interstitial comes back as HTML with a 200, so verify shape.
@@ -48,8 +41,15 @@ async function tabFetch(path) {
 export default async function handler(req, res) {
   const { date, type, venue, race } = req.query;
 
+  if (req.method !== 'GET') return res.status(405).json({ error: 'GET only' });
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return res.status(400).json({ error: 'date required as yyyy-mm-dd' });
+  }
+  // These go into the upstream URL path — allow only the shapes TAB uses.
+  if ((type || venue || race) && !(
+    /^[RHG]$/.test(type || '') && /^[A-Za-z0-9]{1,8}$/.test(venue || '') && /^\d{1,2}$/.test(race || '')
+  )) {
+    return res.status(400).json({ error: 'type, venue and race must all be valid' });
   }
 
   try {
@@ -64,6 +64,6 @@ export default async function handler(req, res) {
     // Don't cache failures — otherwise a blip poisons the CDN for everyone.
     res.setHeader('Cache-Control', 'no-store');
     console.error('races endpoint failed:', err.message);
-    return res.status(502).json({ error: 'upstream unavailable', detail: err.message });
+    return res.status(502).json({ error: 'upstream unavailable' });
   }
 }

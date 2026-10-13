@@ -1,0 +1,151 @@
+rules_version = '2';
+
+// Sweep — Firestore security rules.
+//
+// Model: everyone signs in anonymously (Firebase Auth), and request.auth.uid is
+// the identity. Sweeps are readable by anyone holding the (unguessable) sweep
+// ID, but can never be listed or searched. Join codes resolve through
+// /joinCodes/{code}, which can be fetched by exact code only.
+// Emails live in /sweeps/{id}/private and are write-only for browsers;
+// only the server-side result checker (Admin SDK, bypasses rules) reads them.
+//
+// Deploy: firebase deploy --only firestore:rules
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function sweepPath(id) { return /databases/$(database)/documents/sweeps/$(id); }
+    function sweepBefore(id) { return get(sweepPath(id)).data; }
+    function sweepAfter(id) { return getAfter(sweepPath(id)).data; }
+    function str(v, max) { return v is string && v.size() <= max; }
+    function nonEmptyStr(v, max) { return str(v, max) && v.size() > 0; }
+    function optStr(d, k, max) { return !(k in d) || d[k] == null || str(d[k], max); }
+    function optInt(d, k) { return !(k in d) || d[k] == null || d[k] is int; }
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+
+    // ── Join codes ────────────────────────────────────────────────────────
+    match /joinCodes/{code} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if signedIn()
+        && code.matches('^[A-Z0-9]{4,8}$')
+        && request.resource.data.keys().hasOnly(['sweepId', 'creatorId'])
+        && request.resource.data.creatorId == uid()
+        && request.resource.data.sweepId is string
+        && sweepAfter(request.resource.data.sweepId).creatorId == uid()
+        && sweepAfter(request.resource.data.sweepId).joinCode == code;
+      allow update, delete: if false;
+    }
+
+    // ── Sweeps ────────────────────────────────────────────────────────────
+    function validNewSweep(d) {
+      return d.keys().hasOnly([
+          'name', 'race', 'entryFee', 'maxEntries', 'maxEntriesPerPerson',
+          'joinCode', 'creatorId', 'status', 'createdAt', 'participantIds', 'cup',
+          'tabDate', 'tabRaceType', 'tabVenueMnemonic', 'tabRaceNumber', 'tabMeetingName'])
+        && d.creatorId == uid()
+        && d.status == 'open'
+        && d.participantIds == []
+        && d.createdAt == request.time
+        && nonEmptyStr(d.name, 80)
+        && nonEmptyStr(d.race, 120)
+        && optStr(d, 'entryFee', 20)
+        && d.maxEntries is int && d.maxEntries >= 1 && d.maxEntries <= 100
+        && d.maxEntriesPerPerson is int && d.maxEntriesPerPerson >= 1 && d.maxEntriesPerPerson <= 24
+        && d.joinCode is string && d.joinCode.matches('^[A-Z0-9]{4,8}$')
+        && (!('cup' in d) || d.cup == true)
+        && optStr(d, 'tabDate', 10) && optStr(d, 'tabRaceType', 1)
+        && optStr(d, 'tabVenueMnemonic', 8) && optInt(d, 'tabRaceNumber')
+        && optStr(d, 'tabMeetingName', 60)
+        // The join code must be registered in the same batch (no squatting).
+        && existsAfter(/databases/$(database)/documents/joinCodes/$(d.joinCode));
+    }
+
+    function validTransition(from, to) {
+      return from == to
+        || (from == 'open' && to == 'drawn')
+        || (from == 'drawn' && to == 'racing')
+        || (from == 'racing' && to == 'completed');
+    }
+
+    match /sweeps/{sweepId} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if signedIn() && validNewSweep(request.resource.data);
+      allow delete: if false;
+
+      allow update: if signedIn() && (
+        // Host advances the sweep: draw → race day → completed.
+        (resource.data.creatorId == uid()
+          && changed().hasOnly(['status', 'drawnAt'])
+          && validTransition(resource.data.status, request.resource.data.status))
+        // Anyone joins an open sweep by adding exactly their own UID.
+        || (resource.data.status == 'open'
+          && changed().hasOnly(['participantIds'])
+          && request.resource.data.participantIds is list
+          && request.resource.data.participantIds.hasAll(resource.data.participantIds)
+          && request.resource.data.participantIds.toSet()
+               .difference(resource.data.participantIds.toSet()).hasOnly([uid()]))
+        // A participant's browser closes out the sweep once the result is recorded.
+        || (uid() in resource.data.participantIds
+          && resource.data.status == 'racing'
+          && request.resource.data.status == 'completed'
+          && changed().hasOnly(['status'])
+          && existsAfter(/databases/$(database)/documents/sweeps/$(sweepId)/results/final))
+      );
+
+      // ── Entries (one per claimed spot) ──────────────────────────────────
+      match /entries/{entryId} {
+        allow read: if true;
+        allow create: if signedIn()
+          && sweepBefore(sweepId).status == 'open'
+          && request.resource.data.keys().hasOnly(['userId', 'displayName', 'horseId', 'horseName', 'joinedAt'])
+          && request.resource.data.userId == uid()
+          && nonEmptyStr(request.resource.data.displayName, 40)
+          && request.resource.data.horseId == null
+          && request.resource.data.horseName == null
+          && request.resource.data.joinedAt == request.time
+          && uid() in sweepAfter(sweepId).participantIds;
+        // Only the host assigns horses: the draw, and re-draws after scratchings.
+        allow update: if signedIn()
+          && sweepBefore(sweepId).creatorId == uid()
+          && sweepBefore(sweepId).status in ['open', 'drawn', 'racing']
+          && changed().hasOnly(['horseId', 'horseName', 'redrawnFrom'])
+          && request.resource.data.horseId is int
+          && str(request.resource.data.horseName, 80);
+        allow delete: if false;
+      }
+
+      // ── Private (emails) — write-only from browsers ─────────────────────
+      match /private/{entryId} {
+        allow read, update, delete: if false;
+        allow create: if signedIn()
+          && request.resource.data.keys().hasOnly(['userId', 'email'])
+          && request.resource.data.userId == uid()
+          && str(request.resource.data.email, 254)
+          && request.resource.data.email.matches('^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$')
+          && getAfter(/databases/$(database)/documents/sweeps/$(sweepId)/entries/$(entryId)).data.userId == uid();
+      }
+
+      // ── Results — one doc, first writer wins ────────────────────────────
+      match /results/{resultId} {
+        allow read: if true;
+        allow create: if signedIn()
+          && resultId == 'final'
+          && sweepBefore(sweepId).status == 'racing'
+          && (sweepBefore(sweepId).creatorId == uid() || uid() in sweepBefore(sweepId).participantIds)
+          && request.resource.data.keys().hasOnly([
+               'firstHorseId', 'firstHorseName', 'secondHorseId', 'secondHorseName',
+               'thirdHorseId', 'thirdHorseName', 'autoRecorded', 'recordedAt'])
+          && request.resource.data.autoRecorded is bool
+          && request.resource.data.recordedAt == request.time
+          && optStr(request.resource.data, 'firstHorseName', 80)
+          && optStr(request.resource.data, 'secondHorseName', 80)
+          && optStr(request.resource.data, 'thirdHorseName', 80);
+        allow update, delete: if false;
+      }
+    }
+  }
+}

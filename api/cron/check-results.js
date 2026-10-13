@@ -18,12 +18,12 @@
 
 import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { tabBase } from '../_tunnel.js';
+import { tabBase, proxyHeaders } from '../_tunnel.js';
 
 const RESULTED_STATUSES = new Set(['Resulted', 'Paying']);
 // TAB blocks Vercel's datacenter egress, so results must be fetched through the
-// same Australian-IP proxy tunnel the frontend uses — not api.beta.tab.com.au direct.
-const TAB_BASE = tabBase();
+// same Australian-IP proxy the frontend uses — not api.beta.tab.com.au direct.
+const CUP = { date: '2026-11-03', raceType: 'R' };
 const JURISDICTION = 'QLD';
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const APP_URL = process.env.VITE_APP_URL || 'https://sweep-web-nine.vercel.app';
@@ -41,16 +41,33 @@ function getDb() {
 // ── TAB API ───────────────────────────────────────────────────────────────────
 
 async function tabFetch(path) {
-  const url = `${TAB_BASE}${path}${path.includes('?') ? '&' : '?'}jurisdiction=${JURISDICTION}`;
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
-      'Origin': 'https://www.tab.com.au',
-      'Referer': 'https://www.tab.com.au/',
-    },
-  });
-  if (!res.ok) throw new Error(`TAB ${res.status}: ${url}`);
+  const url = `${tabBase()}${path}${path.includes('?') ? '&' : '?'}jurisdiction=${JURISDICTION}`;
+  const res = await fetch(url, { headers: proxyHeaders() });
+  if (!res.ok) throw new Error(`TAB ${res.status} for ${path}`);
   return res.json();
+}
+
+// Cup sweeps are created before TAB lists the race, so find it by name.
+let cupRef;
+async function resolveRace(sweep) {
+  if (sweep.tabVenueMnemonic && sweep.tabRaceNumber && sweep.tabDate && sweep.tabRaceType) {
+    return sweep;
+  }
+  if (!sweep.cup) return null;
+  if (cupRef === undefined) {
+    const data = await tabFetch(`/racing/dates/${CUP.date}/meetings`);
+    const meeting = (data.meetings || []).find(m => m.raceType === CUP.raceType && /flemington/i.test(m.meetingName || ''));
+    const race = meeting && ((meeting.races || []).find(r => /melbourne cup/i.test(r.raceName || ''))
+      || (meeting.races || []).find(r => r.raceNumber === 7));
+    cupRef = race
+      ? { tabDate: CUP.date, tabRaceType: CUP.raceType, tabVenueMnemonic: meeting.venueMnemonic, tabRaceNumber: race.raceNumber }
+      : null;
+  }
+  return cupRef;
+}
+
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 async function fetchRaceDetail(sweep) {
@@ -87,16 +104,16 @@ async function sendResultEmail({ to, sweepName, race, sweepId, placements }) {
 
   const placingLines = placements
     .map(p => `<tr>
-      <td style="padding:6px 12px;font-weight:700;color:#FFD700;">${p.medal}</td>
-      <td style="padding:6px 12px;color:#fff;">${p.horseName}</td>
-      <td style="padding:6px 12px;color:#ccc;">${p.personName || '—'}</td>
+      <td style="padding:6px 12px;font-weight:700;color:#FFD700;">${esc(p.medal)}</td>
+      <td style="padding:6px 12px;color:#fff;">${esc(p.horseName)}</td>
+      <td style="padding:6px 12px;color:#ccc;">${esc(p.personName || '—')}</td>
     </tr>`)
     .join('');
 
   const html = `
     <div style="background:#0A0E1A;padding:32px;font-family:sans-serif;color:#fff;border-radius:8px;max-width:480px;margin:auto;">
       <h1 style="color:#FFD700;margin:0 0 4px">🏆 Results are in!</h1>
-      <p style="color:#aaa;margin:0 0 24px">${sweepName} · ${race}</p>
+      <p style="color:#aaa;margin:0 0 24px">${esc(sweepName)} · ${esc(race)}</p>
       <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
         <thead>
           <tr style="border-bottom:1px solid #333;">
@@ -107,7 +124,7 @@ async function sendResultEmail({ to, sweepName, race, sweepId, placements }) {
         </thead>
         <tbody>${placingLines}</tbody>
       </table>
-      <a href="${sweepUrl}" style="display:inline-block;background:#FFD700;color:#000;font-weight:700;padding:12px 24px;border-radius:6px;text-decoration:none;">
+      <a href="${esc(sweepUrl)}" style="display:inline-block;background:#FFD700;color:#000;font-weight:700;padding:12px 24px;border-radius:6px;text-decoration:none;">
         View Full Results →
       </a>
     </div>
@@ -122,7 +139,7 @@ async function sendResultEmail({ to, sweepName, race, sweepId, placements }) {
     body: JSON.stringify({
       from: 'Sweep <results@sweep.ripper.au>',
       to: [to],
-      subject: `🏆 Results: ${sweepName}`,
+      subject: `🏆 Results: ${String(sweepName).replace(/[\r\n]/g, ' ').slice(0, 80)}`,
       html,
     }),
   });
@@ -131,9 +148,13 @@ async function sendResultEmail({ to, sweepName, race, sweepId, placements }) {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export default async function handler(req, res) {
-  // Vercel cron sends this header; reject everything else in production
-  const authHeader = req.headers['authorization'];
-  if (process.env.NODE_ENV === 'production' && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  // Fail closed: with no secret configured, nobody gets in (previously an
+  // unset CRON_SECRET meant the header "Bearer undefined" was accepted).
+  const secret = process.env.CRON_SECRET;
+  if (!secret || secret.length < 16) {
+    return res.status(503).json({ error: 'CRON_SECRET not configured' });
+  }
+  if (req.headers['authorization'] !== `Bearer ${secret}`) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
@@ -148,18 +169,19 @@ export default async function handler(req, res) {
       const sweep = sweepDoc.data();
       const sweepId = sweepDoc.id;
 
-      if (!sweep.tabVenueMnemonic || !sweep.tabRaceNumber || !sweep.tabDate || !sweep.tabRaceType) {
-        return { sweepId, skipped: 'no TAB fields' };
-      }
+      const ref = await resolveRace(sweep);
+      if (!ref) return { sweepId, skipped: 'no TAB race' };
 
-      const detail = await fetchRaceDetail(sweep);
+      const detail = await fetchRaceDetail(ref);
       if (!RESULTED_STATUSES.has(detail.raceStatus)) {
         return { sweepId, status: detail.raceStatus, action: 'waiting' };
       }
 
-      // Already saved? (guard against duplicate cron runs)
-      const existingResults = await db.collection('sweeps').doc(sweepId).collection('results').limit(1).get();
+      // Already saved by a browser or an earlier run?
+      const resultsCol = db.collection('sweeps').doc(sweepId).collection('results');
+      const existingResults = await resultsCol.limit(1).get();
       if (!existingResults.empty) {
+        if (sweep.status !== 'completed') await db.collection('sweeps').doc(sweepId).update({ status: 'completed' });
         return { sweepId, action: 'already saved' };
       }
 
@@ -175,8 +197,9 @@ export default async function handler(req, res) {
       const secondName = secondRunner ? `${secondRunner.runnerNumber}. ${secondRunner.runnerName}` : (secondNum ? String(secondNum) : null);
       const thirdName = thirdRunner ? `${thirdRunner.runnerNumber}. ${thirdRunner.runnerName}` : (thirdNum ? String(thirdNum) : null);
 
-      // Save results to Firestore
-      await db.collection('sweeps').doc(sweepId).collection('results').add({
+      // Save results — same fixed doc ID browsers use, so only one write wins.
+      try {
+        await resultsCol.doc('final').create({
         firstHorseId: winnerNum ?? null,
         firstHorseName: firstName,
         secondHorseId: secondNum ?? null,
@@ -185,12 +208,24 @@ export default async function handler(req, res) {
         thirdHorseName: thirdName,
         autoRecorded: true,
         recordedAt: FieldValue.serverTimestamp(),
-      });
+        });
+      } catch (err) {
+        if (err.code !== 6 /* ALREADY_EXISTS */) throw err;
+      }
       await db.collection('sweeps').doc(sweepId).update({ status: 'completed' });
 
       // Fetch entries for email notifications
-      const entriesSnap = await db.collection('sweeps').doc(sweepId).collection('entries').get();
-      const entries = entriesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const [entriesSnap, privateSnap] = await Promise.all([
+        db.collection('sweeps').doc(sweepId).collection('entries').get(),
+        db.collection('sweeps').doc(sweepId).collection('private').get(),
+      ]);
+      const emailByEntry = {};
+      privateSnap.docs.forEach(d => { emailByEntry[d.id] = d.data().email; });
+      const entries = entriesSnap.docs.map(d => ({
+        id: d.id,
+        ...d.data(),
+        email: emailByEntry[d.id] || d.data().email, // legacy sweeps stored it on the entry
+      }));
 
       // Map horse ID → entry holder name (for placing display)
       const entryByHorseId = {};
@@ -216,13 +251,13 @@ export default async function handler(req, res) {
             sweepId,
             placements,
           });
-          emailsSent.push(entry.email);
+          emailsSent.push(entry.id);
         } catch (err) {
           console.error(`Email failed for ${entry.email}:`, err.message);
         }
       }
 
-      return { sweepId, action: 'resulted', emailsSent };
+      return { sweepId, action: 'resulted', emailsSent: emailsSent.length };
     })
   );
 

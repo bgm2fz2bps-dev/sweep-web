@@ -26,6 +26,14 @@ Working as of today:
 Still laptop-dependent: TAB data flows through a Cloudflare quick tunnel to
 George's Mac. That's the single biggest fragility.
 
+**Update 13 Oct (branch `cup-launch`):** Firestore locked down with rules (it was
+publicly readable, emails included). Open relay endpoints and the source dump
+removed, proxy hardened with a token, security headers added. One-tap
+"Melbourne Cup 2026" sweeps that can be drawn before the field is out, plus live
+scratchings and re-draw. Five static SEO pages with a sitemap and structured
+data. Sydney proxy box is now a one-command setup (`scripts/proxy-box/setup.sh`).
+Remaining manual steps are in INFRA.md §0–4.
+
 ---
 
 ## The SEO finding that shapes everything
@@ -70,20 +78,20 @@ use the printable chart as the link magnet.**
 The app is a Vite SPA; Google gets an empty shell with a JS bundle. Nothing to
 index. Needs static or prerendered pages before any content work matters.
 
-- [ ] Static/prerendered route strategy (decide: static HTML in `public/` vs
+- [x] Static/prerendered route strategy (decide: static HTML in `public/` vs
       prerender plugin — prerender keeps one design system, adds build risk)
-- [ ] Per-page title/meta/OG tags, `sitemap.xml`, `robots.txt`, canonicals
-- [ ] Structured data (HowTo / FAQ) on guide pages
+- [x] Per-page title/meta/OG tags, `sitemap.xml`, `robots.txt`, canonicals
+- [x] Structured data (HowTo / FAQ) on guide pages
 
 ### October — content
 
-- [ ] `/melbourne-cup-sweep-generator` — the money page, targets the open query
-- [ ] `/melbourne-cup-sweep-scratchings` — our differentiator, explains what
+- [x] `/melbourne-cup-sweep-generator` — the money page, targets the open query
+- [x] `/melbourne-cup-sweep-scratchings` — our differentiator, explains what
       happens when a horse is scratched and how the app handles it
-- [ ] `/melbourne-cup-sweep-chart` — printable. Blank numbered chart now so it
+- [x] `/melbourne-cup-sweep-chart` — printable. Blank numbered chart now so it
       indexes early; auto-fills from TAB once the field drops
-- [ ] `/how-to-run-a-melbourne-cup-sweep` — guide incl. the legal rules
-- [ ] Home page with real indexable content
+- [x] `/how-to-run-a-melbourne-cup-sweep` — guide incl. the legal rules
+- [x] Home page with real indexable content
 
 ### Late October — hardening
 

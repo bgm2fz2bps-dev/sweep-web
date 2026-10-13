@@ -1,9 +1,12 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { collection, doc, setDoc, addDoc, serverTimestamp } from 'firebase/firestore';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
+import { collection, doc, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import { getSessionId, saveSweepLocally } from '../identity';
-import { fetchTodaysMeetings, fetchRaceDetail } from '../tabApi';
+import { fetchTodaysMeetings, fetchRaceDetail, CUP } from '../tabApi';
+
+// Cup mode is the default until the race has run.
+const CUP_IS_UPCOMING = Date.now() < new Date(CUP.startIso).getTime() + 6 * 3600 * 1000;
 
 function generateJoinCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -21,6 +24,10 @@ function formatTime(isoString) {
 
 export default function CreateSweep() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const [useCup, setUseCup] = useState(
+    searchParams.get('race') === 'cup' || (CUP_IS_UPCOMING && searchParams.get('race') !== 'other')
+  );
   const [form, setForm] = useState({ name: '', race: '', entryFee: '', maxEntries: 24, maxEntriesPerPerson: 1 });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -127,11 +134,11 @@ export default function CreateSweep() {
     setError('');
 
     if (!form.name.trim()) { setError('Give your sweep a name, legend.'); return; }
-    if (!useManual && (!selectedMeeting || !selectedRace)) { setError('Pick a race first.'); return; }
-    if (useManual && !form.race.trim()) { setError("You'll need a race name."); return; }
+    if (form.name.trim().length > 80) { setError('Keep the name under 80 characters.'); return; }
+    if (!useCup && !useManual && (!selectedMeeting || !selectedRace)) { setError('Pick a race first.'); return; }
+    if (!useCup && useManual && !form.race.trim()) { setError("You'll need a race name."); return; }
 
     const uid = getSessionId();
-    const displayName = localStorage.getItem('sweepDisplayName') || 'Anonymous';
 
     setLoading(true);
     try {
@@ -139,12 +146,13 @@ export default function CreateSweep() {
       const sweepRef = doc(collection(db, 'sweeps'));
       const sweepId = sweepRef.id;
 
+      const clamp = (v, lo, hi, dflt) => Math.min(hi, Math.max(lo, parseInt(v, 10) || dflt));
       const sweepData = {
         name: form.name.trim(),
-        race: form.race.trim(),
-        entryFee: form.entryFee ? form.entryFee.trim() : null,
-        maxEntries: parseInt(form.maxEntries, 10) || 24,
-        maxEntriesPerPerson: parseInt(form.maxEntriesPerPerson, 10) || 1,
+        race: (useCup ? CUP.label : form.race.trim()).slice(0, 120),
+        entryFee: form.entryFee ? form.entryFee.trim().slice(0, 20) : null,
+        maxEntries: useCup ? CUP.fieldSize : clamp(form.maxEntries, 1, 100, 24),
+        maxEntriesPerPerson: clamp(form.maxEntriesPerPerson, 1, 24, 1),
         joinCode,
         creatorId: uid,
         status: 'open',
@@ -152,7 +160,11 @@ export default function CreateSweep() {
         participantIds: [],
       };
 
-      if (!useManual && selectedMeeting && selectedRace) {
+      if (useCup) {
+        sweepData.cup = true;
+        sweepData.tabDate = CUP.date;
+        sweepData.tabRaceType = CUP.raceType;
+      } else if (!useManual && selectedMeeting && selectedRace) {
         sweepData.tabDate = selectedMeeting.date;
         sweepData.tabRaceType = selectedMeeting.raceType;
         sweepData.tabVenueMnemonic = selectedMeeting.venueMnemonic;
@@ -160,7 +172,12 @@ export default function CreateSweep() {
         sweepData.tabMeetingName = selectedMeeting.meetingName;
       }
 
-      await setDoc(sweepRef, sweepData);
+      // Join codes live in their own collection so sweeps can't be listed or
+      // enumerated — the rules only allow fetching a code you already know.
+      const batch = writeBatch(db);
+      batch.set(sweepRef, sweepData);
+      batch.set(doc(db, 'joinCodes', joinCode), { sweepId, creatorId: uid });
+      await batch.commit();
       saveSweepLocally(sweepId);
       navigate(`/sweep/${sweepId}`);
     } catch (err) {
@@ -183,8 +200,38 @@ export default function CreateSweep() {
 
       <form onSubmit={handleSubmit} className="card">
 
+        {/* ── Melbourne Cup preset ── */}
+        {CUP_IS_UPCOMING && (
+          <div className="form-group" style={{ marginBottom: '20px' }}>
+            <button
+              type="button"
+              onClick={() => setUseCup(true)}
+              aria-pressed={useCup}
+              style={{
+                width: '100%', textAlign: 'left', padding: '14px 16px', borderRadius: '10px', cursor: 'pointer',
+                border: useCup ? '2px solid var(--yellow)' : '2px solid var(--navy-border)',
+                background: useCup ? 'var(--yellow-bg)' : 'transparent', color: 'var(--off-white)',
+              }}
+            >
+              <div style={{ fontWeight: 800, fontSize: '1rem' }}>🏆 Melbourne Cup 2026</div>
+              <div style={{ fontSize: '0.82rem', color: 'var(--muted-light)', marginTop: '4px' }}>
+                Flemington · Tue 3 Nov · 3:00pm AEDT. Draw any time — horse names, barriers and
+                scratchings fill in automatically once the field is announced (Sat 31 Oct).
+              </div>
+            </button>
+            {useCup ? (
+              <button type="button" onClick={() => setUseCup(false)}
+                style={{ marginTop: '10px', background: 'none', border: 'none', color: 'var(--muted)', fontSize: '0.82rem', cursor: 'pointer', padding: 0 }}>
+                Running a sweep on a different race? →
+              </button>
+            ) : (
+              <p style={{ marginTop: '10px', color: 'var(--muted)', fontSize: '0.82rem' }}>Or pick another race below.</p>
+            )}
+          </div>
+        )}
+
         {/* ── Race type segmented picker ── */}
-        {!useManual && (
+        {!useCup && !useManual && (
           <div className="form-group" style={{ marginBottom: '20px' }}>
             <label className="form-label">🏇 Race Type</label>
             <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
@@ -213,7 +260,7 @@ export default function CreateSweep() {
         )}
 
         {/* ── TAB race picker (default) ── */}
-        {!useManual && (
+        {!useCup && !useManual && (
           <div className="form-group">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
               <label className="form-label" style={{ margin: 0 }}>🏇 Pick a race</label>
@@ -333,13 +380,13 @@ export default function CreateSweep() {
         )}
 
         {/* ── Manual entry fallback ── */}
-        {useManual && (
+        {!useCup && useManual && (
           <div className="form-group">
             <label htmlFor="race" className="form-label">Race Name</label>
             <input
               id="race"
               type="text"
-              placeholder="e.g. Melbourne Cup 2025"
+              placeholder="e.g. Office Cup sweep"
               value={form.race}
               onChange={update('race')}
               className="form-input"
@@ -391,7 +438,7 @@ export default function CreateSweep() {
         </div>
 
         {/* ── Max entries (only for manual sweeps) ── */}
-        {useManual && (
+        {!useCup && useManual && (
           <div className="form-group">
             <label htmlFor="maxEntries" className="form-label">Max Entries</label>
             <input

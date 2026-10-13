@@ -7,7 +7,6 @@ SWEEP_DIR="$HOME/Projects/sweep-web"
 LOG_DIR="$HOME/Library/Logs/sweep-proxy"
 PROXY_LOG="$LOG_DIR/proxy.log"
 TUNNEL_LOG="$LOG_DIR/tunnel.log"
-ENV_FILE="$SWEEP_DIR/.env.production"
 
 mkdir -p "$LOG_DIR"
 
@@ -20,7 +19,7 @@ sleep 1
 
 # Start proxy server
 cd "$SWEEP_DIR"
-node proxy-server.js >> "$PROXY_LOG" 2>&1 &
+PROXY_TOKEN="${PROXY_TOKEN:-}" node proxy-server.js >> "$PROXY_LOG" 2>&1 &
 PROXY_PID=$!
 echo "[$(date)] Proxy started (PID $PROXY_PID)" >> "$LOG_DIR/startup.log"
 
@@ -50,35 +49,21 @@ fi
 
 echo "[$(date)] Tunnel URL: $TUNNEL_URL" >> "$LOG_DIR/startup.log"
 
-# Update .env.production with new tunnel URL (build-time, for the client bundle)
-echo "# TAB proxy via Cloudflare Tunnel → local proxy-server.js on Mac" > "$ENV_FILE"
-echo "VITE_PROXY_URL=$TUNNEL_URL" >> "$ENV_FILE"
-
-# Update api/_tunnel.js — serverless functions can't read .env.production, so the
-# cron result-checker needs the URL bundled in as a module.
-TUNNEL_MODULE="$SWEEP_DIR/api/_tunnel.js"
-cat > "$TUNNEL_MODULE" <<EOF
-/**
- * TAB proxy tunnel URL — auto-maintained by scripts/start-proxy.sh.
- *
- * Serverless functions can't read .env.production (that's build-time only, and
- * only for VITE_* vars in the client bundle). So the tunnel URL is written here
- * as a module that gets bundled into the function at deploy time.
- *
- * A TAB_PROXY_URL env var set in the Vercel dashboard takes precedence, so you
- * can point at a stable proxy (VPS / named tunnel) without touching this file.
- */
+# Update api/_tunnel-url.js — serverless functions can't read .env.production,
+# so the URL is bundled in as a module. (Ignored once TAB_PROXY_URL is set in Vercel.)
+cat > "$SWEEP_DIR/api/_tunnel-url.js" <<EOF
+// Auto-maintained by scripts/start-proxy.sh (laptop tunnel fallback only).
+// Once TAB_PROXY_URL is set in Vercel this value is ignored.
 export const TUNNEL_URL = '$TUNNEL_URL';
-
-export function tabBase() {
-  const base = process.env.TAB_PROXY_URL || TUNNEL_URL;
-  return \`\${base.replace(/\/\$/, '')}/tab/v1/tab-info-service\`;
-}
 EOF
 
 # Git commit and push to trigger Vercel redeploy
 cd "$SWEEP_DIR"
-git add .env.production api/_tunnel.js
+if [ "$(git rev-parse --abbrev-ref HEAD)" != "main" ]; then
+    echo "[$(date)] Not on main, skipping auto-commit of tunnel URL" >> "$LOG_DIR/startup.log"
+    exit 0
+fi
+git add api/_tunnel-url.js
 git commit -m "chore: update Cloudflare tunnel URL [auto]" --no-verify
 git push origin main
 

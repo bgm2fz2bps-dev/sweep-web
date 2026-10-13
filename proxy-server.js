@@ -1,18 +1,58 @@
+/**
+ * TAB proxy — runs on an Australian IP (TAB geo-blocks datacenter egress).
+ *
+ * Only Sweep's own server code (api/races.js, api/cron/check-results.js) calls
+ * this; browsers never do. So it is deliberately narrow:
+ *   - only the two racing endpoints Sweep uses are forwarded (path allowlist)
+ *   - if PROXY_TOKEN is set, requests must carry it in X-Proxy-Token
+ *   - no CORS headers (no browser should be talking to it)
+ *   - a global rate cap, so a bug or abuse can't get this IP banned by TAB
+ *
+ *   PROXY_TOKEN=... node proxy-server.js     # listens on :5175 (or $PORT)
+ *   GET /health                              # uptime check
+ */
 import http from 'http';
 import https from 'https';
+import crypto from 'crypto';
 
 const PORT = process.env.PORT || 5175;
-const TAB_BASE = 'api.beta.tab.com.au';
+const TAB_HOST = 'api.beta.tab.com.au';
+const TOKEN = process.env.PROXY_TOKEN || '';
+const MAX_PER_MINUTE = Number(process.env.PROXY_MAX_PER_MINUTE || 600);
+
+// /tab/v1/tab-info-service/racing/dates/2026-11-03/meetings[/R/FLE/races/7]?jurisdiction=QLD
+const ALLOWED = /^\/tab\/v1\/tab-info-service\/racing\/dates\/\d{4}-\d{2}-\d{2}\/meetings(\/[RHG]\/[A-Za-z0-9]{1,8}\/races\/\d{1,2})?(\?jurisdiction=[A-Z]{2,3})?$/;
+
+if (!TOKEN) {
+  console.warn('[proxy] PROXY_TOKEN not set — accepting unauthenticated requests. Set it in production.');
+}
+
+let windowStart = Date.now();
+let windowCount = 0;
+function rateLimited() {
+  const now = Date.now();
+  if (now - windowStart > 60_000) { windowStart = now; windowCount = 0; }
+  windowCount += 1;
+  return windowCount > MAX_PER_MINUTE;
+}
+
+function tokenOk(req) {
+  if (!TOKEN) return true;
+  const got = Buffer.from(String(req.headers['x-proxy-token'] || ''));
+  const want = Buffer.from(TOKEN);
+  return got.length === want.length && crypto.timingSafeEqual(got, want);
+}
+
+function send(res, status, body) {
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(body));
+}
 
 function makeTabRequest(path, res, redirectCount = 0) {
-  if (redirectCount > 5) {
-    res.writeHead(502);
-    res.end(JSON.stringify({ error: 'Too many redirects from TAB API' }));
-    return;
-  }
+  if (redirectCount > 5) return send(res, 502, { error: 'Too many redirects from TAB API' });
 
-  const options = {
-    hostname: TAB_BASE,
+  const proxyReq = https.request({
+    hostname: TAB_HOST,
     port: 443,
     path,
     method: 'GET',
@@ -24,76 +64,52 @@ function makeTabRequest(path, res, redirectCount = 0) {
       'Accept': 'application/json, text/plain, */*',
       'Accept-Encoding': 'identity',
       'Accept-Language': 'en-AU,en;q=0.9',
-      'Host': TAB_BASE,
+      'Host': TAB_HOST,
     },
-  };
-
-  const proxyReq = https.request(options, (proxyRes) => {
+  }, (proxyRes) => {
     const { statusCode, headers } = proxyRes;
 
-    // Follow redirects internally so the client always gets the final JSON response
-    if ((statusCode === 301 || statusCode === 302 || statusCode === 307 || statusCode === 308) && headers.location) {
-      proxyRes.resume(); // drain the redirect body
-      let location = headers.location;
-      // If the Location is a full URL, extract just the path+query
+    // Follow redirects internally, but only ever to TAB's own host.
+    if ([301, 302, 307, 308].includes(statusCode) && headers.location) {
+      proxyRes.resume();
+      let location;
       try {
-        const u = new URL(location);
+        const u = new URL(headers.location, `https://${TAB_HOST}`);
+        if (u.hostname !== TAB_HOST) return send(res, 502, { error: 'Unexpected redirect' });
         location = u.pathname + u.search;
       } catch {
-        // already a relative path
+        return send(res, 502, { error: 'Bad redirect' });
       }
-      makeTabRequest(location, res, redirectCount + 1);
-      return;
+      return makeTabRequest(location, res, redirectCount + 1);
     }
 
-    const responseHeaders = {
-      ...proxyRes.headers,
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': '*',
-    };
-    res.writeHead(statusCode, responseHeaders);
+    // Pass through only what the caller needs — no cookies or TAB internals.
+    res.writeHead(statusCode, {
+      'Content-Type': headers['content-type'] || 'application/json',
+      'Cache-Control': 'no-store',
+    });
     proxyRes.pipe(res);
   });
 
   proxyReq.on('timeout', () => {
     proxyReq.destroy();
-    if (!res.headersSent) {
-      res.writeHead(504);
-      res.end(JSON.stringify({ error: 'TAB API request timed out' }));
-    }
+    if (!res.headersSent) send(res, 504, { error: 'TAB API request timed out' });
   });
-
   proxyReq.on('error', (err) => {
-    if (!res.headersSent) {
-      res.writeHead(502);
-      res.end(JSON.stringify({ error: err.message }));
-    }
+    if (!res.headersSent) send(res, 502, { error: err.message });
   });
-
   proxyReq.end();
 }
 
 const server = http.createServer((req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', '*');
+  if (req.method === 'GET' && req.url === '/health') return send(res, 200, { status: 'ok' });
+  if (req.method !== 'GET') return send(res, 405, { error: 'Method not allowed' });
+  if (!tokenOk(req)) return send(res, 401, { error: 'Unauthorized' });
+  if (!ALLOWED.test(req.url)) return send(res, 404, { error: 'Not found' });
+  if (rateLimited()) return send(res, 429, { error: 'Slow down' });
 
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
-
-  // Health check for Render/Railway uptime monitoring
-  if (req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok' }));
-    return;
-  }
-
-  // Strip the /tab prefix, forward the rest to the TAB API
-  // e.g. /tab/v1/tab-info-service/racing/... → /v1/tab-info-service/racing/...
-  const path = req.url.replace(/^\/tab/, '');
-  makeTabRequest(path, res);
+  // /tab/v1/tab-info-service/... → /v1/tab-info-service/...
+  makeTabRequest(req.url.replace(/^\/tab/, ''), res);
 });
 
 server.listen(PORT, () => {

@@ -1,14 +1,19 @@
+import { auth } from './firebase';
+
 /**
- * Returns a stable identity for this browser/device.
- * Uses localStorage so it persists across tabs and sessions.
+ * Returns this browser's identity: the Firebase anonymous-auth UID.
+ *
+ * This must be the auth UID (not a random localStorage UUID) because the
+ * Firestore security rules check `request.auth.uid` against `creatorId` /
+ * `userId`. Anonymous auth persists in IndexedDB, so the UID is stable across
+ * tabs and reloads in the same browser — the same lifetime the old
+ * localStorage UUID had.
+ *
+ * App.jsx doesn't render any routes until sign-in has completed, so
+ * currentUser is always set by the time a page calls this.
  */
 export function getSessionId() {
-  let id = localStorage.getItem('sweepSessionId');
-  if (!id) {
-    id = sessionStorage.getItem('sweepSessionId') || crypto.randomUUID();
-    localStorage.setItem('sweepSessionId', id);
-  }
-  return id;
+  return auth.currentUser?.uid ?? null;
 }
 
 /** Save a sweep ID to this device's local list (called on create or join). */
@@ -16,7 +21,7 @@ export function saveSweepLocally(sweepId) {
   const ids = getLocalSweepIds();
   if (!ids.includes(sweepId)) {
     ids.push(sweepId);
-    localStorage.setItem('mySweepIds', JSON.stringify(ids));
+    try { localStorage.setItem('mySweepIds', JSON.stringify(ids)); } catch { /* storage blocked */ }
   }
 }
 

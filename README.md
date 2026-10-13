@@ -4,11 +4,11 @@ A real-time racing sweep app for Australian horse racing. Create a sweep, share 
 
 ## Tech Stack
 
-- **Frontend**: React 18 + Vite
+- **Frontend**: React 19 + Vite (app) + static prerendered content pages (SEO)
 - **Backend/DB**: Firebase Firestore (real-time sync)
-- **Auth**: Firebase Anonymous Auth (session-scoped UUID via `sessionStorage`)
-- **Routing**: React Router v6
-- **TAB Data**: `api.beta.tab.com.au` (proxied through standalone Node proxy on port 5175)
+- **Auth**: Firebase Anonymous Auth; the auth UID is the user's identity and is enforced by `firestore.rules`
+- **Routing**: React Router v7
+- **TAB Data**: `api.beta.tab.com.au` via `/api/races` (CDN-cached) → `proxy-server.js` on an Australian IP
 
 ## Dev Setup
 
@@ -33,7 +33,7 @@ Forwarded to: `https://api.beta.tab.com.au/v1/tab-info-service/...`
 
 ## Identity System
 
-Each browser tab gets a stable UUID stored in `sessionStorage` (per-tab, cleared on close). Display names are stored in `localStorage` and shared across tabs on the same browser. No login required — all auth is Firebase Anonymous Auth under the hood.
+Each browser signs in anonymously with Firebase Auth. The auth UID is stable per browser (persisted in IndexedDB) and is what `creatorId` / `userId` hold, so the security rules can enforce who may draw, join and record results. Display names are in `localStorage`. No login required.
 
 ## Firestore Data Model
 
@@ -44,11 +44,20 @@ sweeps/{sweepId}
   drawnAt
   # TAB fields (optional — only if linked to a race):
   tabDate, tabRaceType, tabVenueMnemonic, tabRaceNumber, tabMeetingName
+  # Melbourne Cup preset: cup: true + tabDate/tabRaceType; the race is found by
+  # name on the Flemington card once TAB publishes it (see findCupRace in tabApi.js)
+  cup
+
+joinCodes/{CODE}            # get-only lookup; sweeps can't be listed
+  sweepId, creatorId
+
+sweeps/{sweepId}/private/{entryId}   # write-only for browsers; cron reads it
+  userId, email
 
 sweeps/{sweepId}/entries/{entryId}
   userId, displayName, horseId, horseName, joinedAt
 
-sweeps/{sweepId}/results/{resultId}
+sweeps/{sweepId}/results/final        # single doc, create-only (first writer wins)
   firstHorseId, firstHorseName
   secondHorseId, secondHorseName
   thirdHorseId, thirdHorseName
@@ -115,57 +124,11 @@ Full flow tested and confirmed working:
 
 The proxy fix that made this work: added `'Accept-Encoding': 'identity'` to the proxy's outbound HTTPS headers so responses come back as plain JSON (not gzip), and pass through all original response headers to the browser.
 
-## Production Deployment
+## Production
 
-The app has two parts to deploy: the **React frontend** and the **Node proxy server**.
+Deployed on Vercel from `main`. Setup, security steps, env vars and the Sydney proxy box are in **[INFRA.md](INFRA.md)**. Firestore security rules live in `firestore.rules` (`npm run test:rules`, `npm run deploy:rules`).
 
-### 1. Push to GitHub
-
-```bash
-cd /Users/geetass/Projects/sweep-web
-rm .git/index.lock   # remove stale lock if present
-git add -A
-git commit -m "Initial commit — sweep-web horse racing sweepstake app"
-gh repo create geetass/sweep-web --public --remote=origin --push --source=.
-```
-
-### 2. Deploy Proxy to Render
-
-The proxy server must run in **Australia** (the TAB API is geo-restricted to AU IPs).
-
-1. Go to [render.com](https://render.com) → New → Web Service
-2. Connect your GitHub account → select `geetass/sweep-web`
-3. Render will auto-detect `render.yaml` — it configures:
-   - Build command: `echo "no build step required"`
-   - Start command: `node proxy-server.js`
-4. In Region, select **Singapore** or closest AU-region available (or use Railway Sydney / Fly.io Sydney)
-5. Note the service URL (e.g. `https://sweep-proxy.onrender.com`)
-
-> ⚠️ **Important**: Render's free tier in US/EU regions may not work because the TAB API is geo-restricted to Australian IPs. If requests fail, use a Sydney-region host like Railway or Fly.io.
-
-### 3. Deploy Frontend to Vercel
-
-1. Go to [vercel.com](https://vercel.com) → New Project → Import from GitHub → `geetass/sweep-web`
-2. Vercel auto-detects Vite — no config changes needed (`vercel.json` is already committed)
-3. Add environment variable:
-   - Key: `VITE_PROXY_URL`
-   - Value: your Render proxy URL (e.g. `https://sweep-proxy.onrender.com`)
-4. Deploy → get your live URL (e.g. `https://sweep-web.vercel.app`)
-
-### 4. Test
-
-Visit your Vercel URL, create a sweep, tick "Link to TAB race today" — the dropdown should populate with today's races.
-
-### Environment Variables
-
-| Variable | Where | Value |
-|----------|-------|-------|
-| `VITE_PROXY_URL` | Vercel env vars | Your Render service URL |
-| `PORT` | Set automatically by Render | Not needed to set manually |
-
-See `.env.example` for reference.
-
----
+The SEO pages (`/`, `/melbourne-cup-sweep-generator`, `…-scratchings`, `…-chart`, `/how-to-run-a-melbourne-cup-sweep`) are static HTML generated at build time from `site/pages.mjs` by `scripts/build-pages.mjs`. The React app is served as `app.html` for `/create`, `/sweep/:id`, `/join/:code` and `/my-sweeps`.
 
 ## Known Issues / TODO
 

@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
+import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { saveSweepLocally } from '../identity';
 
 export default function JoinSweep() {
-  const { code } = useParams();
+  const params = useParams();
+  const [searchParams] = useSearchParams();
+  // /join/CODE, or /join?code=CODE from the no-JS form on the static pages
+  const code = params.code || searchParams.get('code') || '';
   const navigate = useNavigate();
   const [status, setStatus] = useState('loading');
   const [errorMsg, setErrorMsg] = useState('');
@@ -21,16 +24,20 @@ export default function JoinSweep() {
 
   const resolveCode = async (joinCode) => {
     try {
-      const q = query(collection(db, 'sweeps'), where('joinCode', '==', joinCode));
-      const snap = await getDocs(q);
+      if (!/^[A-Z0-9]{4,8}$/.test(joinCode)) {
+        setStatus('error');
+        setErrorMsg(`"${joinCode}" doesn't look like a join code. Double-check it, mate.`);
+        return;
+      }
+      const snap = await getDoc(doc(db, 'joinCodes', joinCode));
 
-      if (snap.empty) {
+      if (!snap.exists()) {
         setStatus('error');
         setErrorMsg(`Couldn't find a sweep with code "${joinCode}". Double-check the code, mate.`);
         return;
       }
 
-      const sweepId = snap.docs[0].id;
+      const { sweepId } = snap.data();
       saveSweepLocally(sweepId);
       navigate(`/sweep/${sweepId}`, { replace: true });
     } catch (err) {

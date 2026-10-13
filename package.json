@@ -7,9 +7,11 @@
     "dev": "vite",
     "proxy": "node proxy-server.js",
     "dev:all": "concurrently \"node proxy-server.js\" \"vite\"",
-    "build": "vite build",
+    "build": "vite build && node scripts/build-pages.mjs",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:rules": "npx -y firebase-tools@14 emulators:exec --only firestore --project sweep-rules-test \"node --test tests/\"",
+    "deploy:rules": "npx -y firebase-tools@14 deploy --only firestore:rules --project sweep-bf841"
   },
   "dependencies": {
     "firebase": "^12.11.0",
@@ -20,6 +22,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@firebase/rules-unit-testing": "^5.0.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",

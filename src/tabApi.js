@@ -111,23 +111,86 @@ export async function fetchRaceDetail(date, raceType, venueMnemonic, raceNumber)
   const data = await racesFetch({ date, type: raceType, venue: venueMnemonic, race: raceNumber });
   const race = data.race || data;
 
-  const runners = (race.runners || [])
+  // Full field incl. scratchings — needed to tell people their horse was scratched.
+  const field = (race.runners || [])
     .filter(r => !r.vacantBox && !r.emergency)
     .map(r => ({
       runnerNumber: r.runnerNumber,
       runnerName: r.runnerName,
       barrierNumber: r.barrierNumber,
       scratched: !!r.scratched,
-    }))
-    .filter(r => !r.scratched);
+    }));
 
   return {
     raceStatus: race.raceStatus,
     raceName: race.raceName || `Race ${raceNumber}`,
     raceStartTime: race.raceStartTime,
-    runners,
+    runners: field.filter(r => !r.scratched),
+    field,
     results: race.results || [],
   };
+}
+
+// ── Melbourne Cup ────────────────────────────────────────────────────────────
+// Cup sweeps are created weeks before TAB publishes the field, so they can't
+// store a venue/race number up front. They carry `cup: true` and the race is
+// looked up by name on the day's Flemington card once TAB lists it (the final
+// field is declared Sat 31 Oct; the meeting appears around then).
+
+export const CUP = {
+  date: '2026-11-03',
+  raceType: 'R',
+  startIso: '2026-11-03T15:00:00+11:00',
+  label: 'Melbourne Cup 2026 — Flemington, Tue 3 Nov',
+  fieldSize: 24,
+};
+
+let cupLookup = null; // { at, promise }
+
+export function findCupRace() {
+  // Cache hits for 5 min; a miss (field not yet published) is retried sooner.
+  if (cupLookup && Date.now() - cupLookup.at < 5 * 60 * 1000) return cupLookup.promise;
+  const promise = racesFetch({ date: CUP.date })
+    .then(data => {
+      const meeting = (data.meetings || []).find(
+        m => m.raceType === CUP.raceType && /flemington/i.test(m.meetingName || '')
+      );
+      if (!meeting) return null;
+      const races = meeting.races || [];
+      const race = races.find(r => /melbourne cup/i.test(r.raceName || ''))
+        || races.find(r => r.raceNumber === 7); // Cup is Flemington R7 in 2026
+      if (!race) return null;
+      return { date: CUP.date, raceType: CUP.raceType, venueMnemonic: meeting.venueMnemonic, raceNumber: race.raceNumber };
+    })
+    .catch(() => null);
+  cupLookup = { at: Date.now(), promise };
+  promise.then(ref => { if (!ref && cupLookup?.promise === promise) cupLookup.at = Date.now() - 4 * 60 * 1000; });
+  return promise;
+}
+
+/** True when the sweep follows a live TAB race (picked race, or the Cup preset). */
+export function isTabLinked(sweep) {
+  return !!(sweep && (sweep.tabVenueMnemonic || sweep.cup));
+}
+
+/**
+ * Race detail for a sweep, or null when its race isn't on TAB yet
+ * (a Cup sweep before the field is published).
+ */
+export async function fetchSweepRace(sweep) {
+  let ref = null;
+  if (sweep.tabVenueMnemonic) {
+    ref = { date: sweep.tabDate, raceType: sweep.tabRaceType, venueMnemonic: sweep.tabVenueMnemonic, raceNumber: sweep.tabRaceNumber };
+  } else if (sweep.cup) {
+    ref = await findCupRace();
+  }
+  if (!ref) return null;
+  return fetchRaceDetail(ref.date, ref.raceType, ref.venueMnemonic, ref.raceNumber);
+}
+
+/** Generic numbered horses (1..n) for manual sweeps and pre-field Cup draws. */
+export function numberedHorses(n) {
+  return Array.from({ length: n }, (_, i) => ({ id: i + 1, name: `No. ${i + 1}` }));
 }
 
 /**
