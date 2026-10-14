@@ -20,7 +20,20 @@ Note: sweeps created before this change used a different identity scheme, so the
 
 ---
 
-## 1. Sydney proxy box (replaces the laptop tunnel)
+## 1. TAB proxy host (replaces the laptop quick tunnel)
+
+**Primary: the spare M1 MacBook at home.** A residential Australian IP is less likely to be blocked by TAB than a datacenter one. Tailscale Funnel gives it a free, permanent HTTPS URL. On the M1:
+
+```bash
+git clone https://github.com/bgm2fz2bps-dev/sweep-web.git && cd sweep-web
+bash scripts/m1-proxy/setup.sh
+```
+
+The script installs Node and Tailscale (Homebrew), and runs the proxy and the five-minute result checker as boot-time launchd services that restart themselves. It turns on Funnel at `https://sweep-proxy.<tailnet>.ts.net`, stops the Mac sleeping on power, and makes it boot after a power cut. At the end it prints `TAB_PROXY_URL` and `PROXY_TOKEN` for Vercel. You still need to turn off automatic macOS updates by hand in System Settings.
+
+**Backup:** the everyday Mac's quick tunnel (`scripts/start-proxy.sh`). If the M1 or the home connection drops, start the tunnel, set `TAB_PROXY_URL` to the URL it prints, and redeploy.
+
+### Alternative: Sydney VPS
 
 TAB geo-blocks datacenter egress, including Vercel `syd1`, so every TAB call exits through `proxy-server.js` on an Australian IP. Right now that's a Cloudflare quick tunnel to the Mac: the URL changes on restart, it dies when the Mac sleeps, and there's no redundancy.
 

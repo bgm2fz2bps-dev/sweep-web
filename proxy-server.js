@@ -112,6 +112,7 @@ const server = http.createServer((req, res) => {
   makeTabRequest(req.url.replace(/^\/tab/, ''), res);
 });
 
-server.listen(PORT, () => {
-  console.log(`TAB proxy running on http://localhost:${PORT}`);
+// HOST=127.0.0.1 on the M1/VPS so only the local tunnel/Caddy can reach it.
+server.listen(PORT, process.env.HOST, () => {
+  console.log(`TAB proxy running on ${process.env.HOST || '*'}:${PORT}`);
 });
