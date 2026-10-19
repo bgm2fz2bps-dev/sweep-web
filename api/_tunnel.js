@@ -8,7 +8,7 @@
  * A TAB_PROXY_URL env var set in the Vercel dashboard takes precedence, so you
  * can point at a stable proxy (VPS / named tunnel) without touching this file.
  */
-export const TUNNEL_URL = 'https://sun-broader-karaoke-hair.trycloudflare.com';
+export const TUNNEL_URL = 'https://element-fundamental-authorization-euros.trycloudflare.com';
 
 export function tabBase() {
   const base = process.env.TAB_PROXY_URL || TUNNEL_URL;
